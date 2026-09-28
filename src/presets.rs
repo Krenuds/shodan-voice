@@ -139,6 +139,10 @@ impl Values {
                 params.set_index(i, v);
             }
         }
+        // Saved before formants were separate: pitch used to drag them along, so match it.
+        if !self.0.contains_key("formant") {
+            params.set(P::Formant, self.0.get("base_pitch").copied().unwrap_or(0.0));
+        }
     }
 }
 

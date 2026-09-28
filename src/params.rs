@@ -39,6 +39,10 @@ params! {
     InGain        => ("in_gain", "Gain", "Input", -24.0, 24.0, 0.0, "dB", Continuous, "Mic input gain."),
     Gate          => ("gate", "Gate", "Input", -80.0, -20.0, -55.0, "dB", Continuous, "Noise gate threshold. Also stops glitches firing on room noise."),
 
+    Formant       => ("formant", "Formant", "Voice", -12.0, 12.0, 0.0, "st", Continuous, "Throat size, independent of pitch. Negative = bigger/darker, positive = smaller/brighter."),
+    Robot         => ("robot", "Robot", "Voice", 0.0, 1.0, 0.0, "", Continuous, "Flattens your intonation towards Note. 0 = natural, 100% = dead monotone machine."),
+    Note          => ("note", "Note", "Voice", 36.0, 72.0, 55.0, "note", Stepped, "The pitch Robot pulls towards."),
+
     Sensitivity   => ("sensitivity", "Sensitivity", "Glitch", 0.0, 1.0, 0.6, "", Continuous, "How easily a syllable start is detected."),
     StutterChance => ("stutter_chance", "Stutter", "Glitch", 0.0, 1.0, 0.35, "", Continuous, "Chance a syllable gets stuttered: L-l-look at you."),
     Repeats       => ("repeats", "Repeats", "Glitch", 1.0, 5.0, 2.0, "x", Stepped, "Extra repeats of a stuttered slice."),
@@ -51,6 +55,7 @@ params! {
     JumpRange     => ("jump_range", "Jump range", "Pitch", 0.0, 12.0, 4.0, "st", Continuous, "Max size of random pitch jumps."),
     JumpChance    => ("jump_chance", "Jumps", "Pitch", 0.0, 1.0, 0.4, "", Continuous, "How often the pitch jumps."),
     Glide         => ("glide", "Glide", "Pitch", 0.0, 200.0, 0.0, "ms", Continuous, "0 = hard snaps. Higher = slides between pitches."),
+    Grain         => ("grain", "Grain", "Pitch", 12.0, 40.0, 20.0, "ms", Continuous, "Pitch-shifter window. The voice is delayed by about half of this: shorter = less delay, rougher/buzzier sound."),
 
     Layers        => ("layers", "Layers", "Voices", 0.0, 4.0, 2.0, "", Stepped, "Extra copies of the voice."),
     Detune        => ("detune", "Detune", "Voices", 0.0, 60.0, 18.0, "ct", Continuous, "How out of tune the copies are."),
@@ -67,7 +72,6 @@ params! {
     LofiBits      => ("lofi_bits", "Bits", "Lo-fi", 4.0, 16.0, 12.0, "bit", Continuous, "Bit depth reduction."),
     LofiTone      => ("lofi_tone", "Tone", "Lo-fi", 0.0, 1.0, 0.3, "", Continuous, "0 = full range, 1 = narrow intercom band."),
 
-    DryWet        => ("dry_wet", "Dry/Wet", "Output", 0.0, 1.0, 1.0, "", Continuous, "Blend of your clean voice and SHODAN."),
     OutGain       => ("out_gain", "Gain", "Output", -24.0, 12.0, 0.0, "dB", Continuous, "Output level (a limiter follows)."),
     Bypass        => ("bypass", "Bypass", "Output", 0.0, 1.0, 0.0, "", Toggle, "Pass your clean voice through."),
 }

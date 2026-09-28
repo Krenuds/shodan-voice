@@ -2,6 +2,7 @@ pub mod filters;
 pub mod flanger;
 pub mod limiter;
 pub mod lofi;
+pub mod lpc;
 pub mod onset;
 pub mod pitch;
 pub mod rng;

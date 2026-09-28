@@ -1,4 +1,4 @@
-//! Offline processing: `shodan-voice --render in.wav out.wav [--preset NAME] [--seed N]`.
+//! Offline processing: `shodan-voice --render in.wav out.wav [--preset NAME] [--seed N] [--set knob=value ...]`.
 
 use crate::audio::engine::Engine;
 use crate::presets;
@@ -9,10 +9,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut positional = Vec::new();
     let mut preset = "ss1".to_string();
     let mut seed = 1u64;
+    let mut overrides = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--preset" => preset = it.next().ok_or("--preset needs a name")?.clone(),
+            "--set" => overrides.push(it.next().ok_or("--set needs key=value")?.clone()),
             "--seed" => seed = it.next().ok_or("--seed needs a number")?.parse().map_err(|e| format!("bad seed: {e}"))?,
             _ => positional.push(a.clone()),
         }
@@ -27,6 +29,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
         format!("unknown preset '{preset}', choose one of: {}", names.join(", "))
     })?;
     preset.apply(&shared.params);
+    for o in &overrides {
+        let (key, value) = o.split_once('=').ok_or_else(|| format!("--set expects knob=value, got '{o}'"))?;
+        let i = crate::params::DEFS.iter().position(|d| d.key == key).ok_or_else(|| {
+            let keys: Vec<_> = crate::params::DEFS.iter().map(|d| d.key).collect();
+            format!("unknown knob '{key}', choose one of: {}", keys.join(", "))
+        })?;
+        shared.params.set_index(i, value.parse().map_err(|e| format!("bad value for {key}: {e}"))?);
+    }
 
     let mut reader = hound::WavReader::open(input).map_err(|e| format!("{input}: {e}"))?;
     let spec = reader.spec();

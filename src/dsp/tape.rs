@@ -66,6 +66,11 @@ impl Tape {
         (self.live() - self.head.pos).max(0.0)
     }
 
+    /// Absolute sample position the read head is playing.
+    pub fn position(&self) -> f64 {
+        self.head.pos
+    }
+
     pub fn busy(&self) -> bool {
         self.state != State::Normal
     }

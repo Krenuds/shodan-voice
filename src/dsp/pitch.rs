@@ -8,6 +8,8 @@ use std::f32::consts::PI;
 /// crossfaded with sin² windows. Cheap, ~window/2 latency, and a little robotic.
 pub struct Shifter {
     line: DelayLine,
+    sr: f32,
+    max_window: f32,
     window: f32,
     phase: f32,
     /// Constant extra delay (used to offset layered voices in time).
@@ -15,10 +17,16 @@ pub struct Shifter {
 }
 
 impl Shifter {
-    pub fn new(sr: f32, window_ms: f32, max_extra_ms: f32) -> Self {
-        let window = window_ms * 0.001 * sr;
-        let len = (window + max_extra_ms * 0.001 * sr) as usize + 16;
-        Self { line: DelayLine::new(len), window, phase: 0.5, extra_delay: 0.0 }
+    /// `max_window_ms` sizes the buffer; the window itself starts at 20 ms (see `set_window_ms`).
+    pub fn new(sr: f32, max_window_ms: f32, max_extra_ms: f32) -> Self {
+        let max_window = max_window_ms * 0.001 * sr;
+        let len = (max_window + max_extra_ms * 0.001 * sr) as usize + 16;
+        Self { line: DelayLine::new(len), sr, max_window, window: (0.02 * sr).min(max_window), phase: 0.5, extra_delay: 0.0 }
+    }
+
+    /// Grain size: shorter = less delay (about half the window), rougher sound.
+    pub fn set_window_ms(&mut self, ms: f32) {
+        self.window = (ms * 0.001 * self.sr).clamp(64.0, self.max_window);
     }
 
     #[inline]
@@ -119,29 +127,31 @@ pub fn semis_to_ratio(semis: f32) -> f32 {
 mod tests {
     use super::*;
 
-    fn measure_hz(ratio: f32) -> f32 {
+    /// Pitch of the shifted output via autocorrelation (robust to grain-crossfade dips).
+    fn measure_hz(ratio: f32, window_ms: f32) -> f32 {
         let sr = 48000.0;
-        let mut s = Shifter::new(sr, 35.0, 0.0);
-        let mut crossings = 0;
-        let mut prev = 0.0;
-        let total = sr as usize * 2;
-        for n in 0..total {
-            let x = (n as f32 / sr * 220.0 * std::f32::consts::TAU).sin();
-            let y = s.process(x, ratio);
-            if n > sr as usize && prev <= 0.0 && y > 0.0 {
-                crossings += 1;
-            }
-            prev = y;
-        }
-        crossings as f32
+        let mut s = Shifter::new(sr, 40.0, 0.0);
+        s.set_window_ms(window_ms);
+        let out: Vec<f32> = (0..sr as usize).map(|n| s.process((n as f32 / sr * 220.0 * std::f32::consts::TAU).sin(), ratio)).collect();
+        let seg = &out[24_000..24_000 + 8192];
+        let corr = |lag: usize| -> f32 { seg[..seg.len() - lag].iter().zip(&seg[lag..]).map(|(a, b)| a * b).sum() };
+        // First strong peak in the 80–400 Hz lag range (later peaks are period multiples).
+        let c: Vec<f32> = (120..600).map(corr).collect();
+        let max = c.iter().copied().fold(f32::MIN, f32::max);
+        let first = (1..c.len() - 1).find(|&i| c[i] > 0.85 * max && c[i] >= c[i - 1] && c[i] >= c[i + 1]).unwrap();
+        sr / (first + 120) as f32
     }
 
     #[test]
     fn shifts_up_and_down_a_fifth() {
-        for semis in [7.0f32, -7.0, 0.0] {
-            let expected = 220.0 * semis_to_ratio(semis);
-            let got = measure_hz(semis_to_ratio(semis));
-            assert!((got - expected).abs() / expected < 0.03, "{semis} st: got {got} Hz, want {expected}");
+        for window in [12.0, 20.0, 40.0] {
+            for semis in [7.0f32, -7.0, 0.0] {
+                let expected = 220.0 * semis_to_ratio(semis);
+                let got = measure_hz(semis_to_ratio(semis), window);
+                // Short grains smear pitch towards the input (the price of low latency).
+                let tolerance = if window < 15.0 { 0.12 } else { 0.045 };
+                assert!((got - expected).abs() / expected < tolerance, "{window} ms, {semis} st: got {got} Hz, want {expected}");
+            }
         }
     }
 }

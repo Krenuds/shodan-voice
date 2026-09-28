@@ -24,6 +24,9 @@ pub struct VoiceSettings {
     pub spread: f32,
     pub chaos: f32,
     pub level: f32,
+    pub grain_ms: f32,
+    /// Extra pitch ratio from the robot (applies to every voice).
+    pub robot_ratio: f32,
 }
 
 pub struct Voices {
@@ -39,11 +42,11 @@ pub struct Voices {
 impl Voices {
     pub fn new(sr: f32, rng: &mut Rng) -> Self {
         Self {
-            main: Shifter::new(sr, 35.0, 0.0),
+            main: Shifter::new(sr, 40.0, 0.0),
             main_jump: Jumper::new(sr, rng.fork()),
             layers: (0..MAX_LAYERS)
                 .map(|_| Layer {
-                    shifter: Shifter::new(sr, 35.0, 40.0),
+                    shifter: Shifter::new(sr, 40.0, 40.0),
                     jumper: Jumper::new(sr, rng.fork()),
                     own_pitch: false,
                     gain: 0.0,
@@ -60,7 +63,8 @@ impl Voices {
         let n = input.len() as u32;
         let offset = self.main_jump.update(n, onset, voiced, &s.jump);
         self.offset = offset;
-        let main_ratio = semis_to_ratio(s.base_pitch + offset);
+        let main_ratio = semis_to_ratio(s.base_pitch + offset) * s.robot_ratio;
+        self.main.set_window_ms(s.grain_ms);
         for (i, &x) in input.iter().enumerate() {
             let y = self.main.process(x, main_ratio);
             out_l[i] = y;
@@ -82,6 +86,7 @@ impl Voices {
             }
             let layer_offset = layer.jumper.update(n, false, voiced, &follow);
 
+            layer.shifter.set_window_ms(s.grain_ms);
             let g0 = layer.gain;
             layer.gain += (target_gain - layer.gain) * 0.05;
             if g0 < 1e-4 && layer.gain < 1e-4 {
@@ -93,7 +98,7 @@ impl Voices {
             }
             power += layer.gain * layer.gain;
 
-            let ratio = semis_to_ratio(s.base_pitch + layer_offset + LAYER_DETUNE[k] * s.detune_cents / 100.0);
+            let ratio = semis_to_ratio(s.base_pitch + layer_offset + LAYER_DETUNE[k] * s.detune_cents / 100.0) * s.robot_ratio;
             layer.shifter.extra_delay = (1.0 + LAYER_DELAY_MS[k] * s.spread) * 0.001 * self.sr;
             let angle = (LAYER_PAN[k] * s.spread + 1.0) * FRAC_PI_4;
             let (pl, pr) = (angle.cos() * std::f32::consts::SQRT_2, angle.sin() * std::f32::consts::SQRT_2);

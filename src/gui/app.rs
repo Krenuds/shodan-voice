@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-const GROUPS: &[&str] = &["Input", "Glitch", "Pitch", "Voices", "Metal", "Lo-fi", "Output"];
+const GROUPS: &[&str] = &["Input", "Voice", "Glitch", "Pitch", "Voices", "Metal", "Lo-fi", "Output"];
 
 pub struct App {
     shared: Arc<Shared>,
@@ -32,6 +32,8 @@ pub struct App {
     glitch_flash: Option<Instant>,
     in_level: f32,
     out_level: f32,
+    /// Smoothed end-to-end latency estimate for [main output, monitor], ms.
+    latency: [f32; 2],
     _hotkeys: Option<global_hotkey::GlobalHotKeyManager>,
     last_save: Instant,
 }
@@ -72,6 +74,7 @@ impl App {
             glitch_flash: None,
             in_level: 0.0,
             out_level: 0.0,
+            latency: [0.0; 2],
             _hotkeys: hotkeys,
             last_save: Instant::now(),
             settings,
@@ -246,6 +249,23 @@ impl App {
                 ui.label(RichText::new(format!("pitch {:+.1} st", m.pitch.get())).monospace().small());
                 ui.label(RichText::new(format!("tape lag {:.0} ms", m.lag_ms.get())).monospace().small());
             });
+            if self.audio.is_some() {
+                let (input, dsp) = (m.input_ms.get(), m.dsp_ms.get());
+                for k in 0..2 {
+                    self.latency[k] += (input + dsp + m.output_ms[k].get() - self.latency[k]) * 0.1;
+                }
+                let mut text = format!("latency ≈ {:.0} ms", self.latency[0]);
+                if self.settings.monitor {
+                    text += &format!(" · monitor ≈ {:.0} ms", self.latency[1]);
+                }
+                text += &format!("  (mic {input:.0} + fx {dsp:.0} + out {:.0})", m.output_ms[if self.settings.monitor { 1 } else { 0 }].get());
+                let color = if self.latency[if self.settings.monitor { 1 } else { 0 }] > 60.0 { theme::WARN } else { theme::TEXT_DIM };
+                ui.label(RichText::new(text).monospace().small().color(color)).on_hover_text(format!(
+                    "Mic driver {input:.1} ms + effect {dsp:.1} ms (Grain/2) + buffered & output driver: main {:.1} ms, monitor {:.1} ms.\nLower the Grain knob to cut the effect's share. Windows shared-mode audio adds ~10 ms per device.",
+                    m.output_ms[0].get(),
+                    m.output_ms[1].get()
+                ));
+            }
         });
     }
 
@@ -387,6 +407,12 @@ fn device_combo(ui: &mut egui::Ui, id: &str, devices: &[DeviceInfo], selected: &
     changed
 }
 
+fn note_name(midi: f32) -> String {
+    const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    let n = midi.round() as i32;
+    format!("{}{} {:.0}Hz", NAMES[n.rem_euclid(12) as usize], n.div_euclid(12) - 1, crate::dsp::lpc::midi_to_hz(n as f32))
+}
+
 fn format_value(d: &ParamDef, v: f32) -> String {
     match d.unit {
         "dB" => format!("{v:+.1} dB"),
@@ -395,6 +421,7 @@ fn format_value(d: &ParamDef, v: f32) -> String {
         "ct" => format!("{v:.0} ct"),
         "bit" => format!("{v:.1} bit"),
         "x" => format!("{v:.0}x"),
+        "note" => note_name(v),
         "Hz" if v >= 1000.0 => format!("{:.1} kHz", v / 1000.0),
         "Hz" => format!("{v:.2} Hz"),
         _ if d.kind == Kind::Stepped => format!("{v:.0}"),

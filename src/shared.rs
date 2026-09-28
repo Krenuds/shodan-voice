@@ -41,6 +41,12 @@ pub struct Meters {
     pub glitches: AtomicU32,
     /// Audio callbacks that had to pad with silence (input ran dry).
     pub underruns: AtomicU32,
+    /// Age of the oldest mic sample when its callback ran (driver capture delay), ms.
+    pub input_ms: AtomicF32,
+    /// Delay added by the effect itself (pitch-shifter window), ms.
+    pub dsp_ms: AtomicF32,
+    /// Buffered + device playback delay for [main output, monitor], ms.
+    pub output_ms: [AtomicF32; 2],
 }
 
 pub struct SlotShared {
