@@ -84,7 +84,7 @@ One window (`app.rs`): a toolbar on top (`toolbar.rs`: presets, add module, late
 
 The panels don't own anything: `App` passes each one a context struct of borrows plus `UiState` (`state.rs`: the selection, meter levels held between frames, each panel's own state) and gets back what the user asked for, e.g. a rack `Action`, which `App::apply` runs and saves. Meters are read from the atomics once per frame into `Levels`; panels read those. Per-module meters come from `ModuleShared::out_peak`, which the engine fills after each module without touching the audio.
 
-The look is hardware (the EP-133 K.O. II): a light grey chassis, a black LCD for the patchbay, chunky keys, one orange. Every colour is a constant in `theme.rs`, and the shared hardware widgets (keys, LEDs, 7-segment readouts, pixel meters, the add-module menu) are in `widgets.rs`; panels use those rather than their own colours.
+The look is hardware (the EP-133 K.O. II): a light grey chassis, a lighter square-cut tray for the patchbay (dark module keys, light MIC / OUTPUT keys, grey cables that light orange), small black LCDs for readouts, chunky keys, one orange. Every colour is a constant in `theme.rs`, and the shared hardware widgets (keys, LEDs, 7-segment readouts, pixel meters, the add-module menu) are in `widgets.rs`; panels use those rather than their own colours.
 
 `Rack` (`rack.rs`, model only) is the GUI-side list of items: native, CLAP, or `Missing` (a saved module that could not be recreated, kept so saving doesn't silently drop it). Each item knows whether the engine currently holds its audio half (`live`).
 

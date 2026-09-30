@@ -1,4 +1,5 @@
-//! The patchbay: the chain drawn as nodes and cables on the LCD, MIC → modules → OUTPUT.
+//! The patchbay: the chain drawn as keys and cables on a light tray set into the chassis,
+//! MIC → modules → OUTPUT.
 //!
 //! The engine is a strict serial chain, so this is a *visual* patchbay: nodes flow left to right
 //! and snake onto new rows, a cable joins each node to the next, a module is moved by dragging
@@ -13,7 +14,7 @@ use crate::audio::module::ModuleId;
 use crate::params::io::P;
 use crate::shared::Shared;
 use eframe::egui::{
-    self, Align, Align2, CornerRadius, CursorIcon, FontId, Key, LayerId, Layout, Modifiers, Order, Painter, PointerButton, Popup, PopupAnchor, PopupCloseBehavior, PopupKind, Pos2, Rect, Sense,
+    self, Align, Align2, Color32, CornerRadius, CursorIcon, FontId, Key, LayerId, Layout, Modifiers, Order, Painter, PointerButton, Popup, PopupAnchor, PopupCloseBehavior, PopupKind, Pos2, Rect, Sense,
     Shape, Stroke, StrokeKind, UiBuilder, Vec2, pos2, vec2,
 };
 use std::sync::atomic::Ordering;
@@ -30,13 +31,16 @@ const MIN_GAP: f32 = 32.0;
 const END: Vec2 = vec2(112.0, 56.0);
 /// Space between nodes, both across and between rows. The ⊕ sits in it.
 const GAP: f32 = 48.0;
-/// Space between the LCD's edge and the nodes (wrap cables run out into it).
+/// Space between the tray's edge and the nodes (wrap cables run out into it).
 const MARGIN: f32 = 24.0;
-/// The LCD's dot grid; the chain is snapped onto it.
+/// The tray's printed dot grid; the chain is snapped onto it.
 const DOT: f32 = 16.0;
 /// How close the pointer must be to a cable to show its ⊕.
 const CABLE_HOVER: f32 = 12.0;
 const PLUS_RADIUS: f32 = 10.0;
+/// Corner radii: the tray and its keys are square-cut, like the rest of the chassis.
+const TRAY_RADIUS: u8 = 2;
+const KEY_RADIUS: u8 = 3;
 
 /// Node size, gaps (across, between rows) and margin for one layout.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -51,8 +55,15 @@ const fn fit_of(w: f32, h: f32, gx: f32, gy: f32, margin: f32) -> Fit {
 }
 
 /// Full-height layouts, largest first: the one with the fewest rows wins.
-const ROOMY: [Fit; 4] = [fit_of(NODE.x, NODE.y, GAP, GAP, MARGIN), fit_of(NODE.x, NODE.y, MIN_GAP, 40.0, MARGIN), fit_of(128.0, NODE.y, MIN_GAP, 40.0, MARGIN), fit_of(MIN_NODE_X, NODE.y, MIN_GAP, 40.0, MARGIN)];
-/// Compact layouts for a chain that would not fit the LCD's height otherwise, largest first.
+const ROOMY: [Fit; 5] = [
+    fit_of(NODE.x, NODE.y, GAP, GAP, MARGIN),
+    fit_of(NODE.x, NODE.y, MIN_GAP, 40.0, MARGIN),
+    fit_of(128.0, NODE.y, MIN_GAP, 40.0, MARGIN),
+    fit_of(MIN_NODE_X, NODE.y, MIN_GAP, 40.0, MARGIN),
+    // Tight gaps and margin: keeps the default chain on one row beside a wide inspector.
+    fit_of(MIN_NODE_X, NODE.y, 24.0, 40.0, 16.0),
+];
+/// Compact layouts for a chain that would not fit the tray's height otherwise, largest first.
 /// The last one (18 nodes in a 900×560 window) scrolls if even it does not fit.
 const COMPACT: [Fit; 4] = [fit_of(120.0, 64.0, MIN_GAP, 32.0, MARGIN), fit_of(112.0, 56.0, 24.0, 24.0, MARGIN), fit_of(104.0, 48.0, 24.0, 24.0, 16.0), fit_of(96.0, 48.0, 24.0, 16.0, 16.0)];
 
@@ -85,41 +96,41 @@ pub struct PatchbayCtx<'a> {
 
 /// Draw the patchbay into the whole of `ui`. Returns an edit of the chain, if one was made.
 pub fn show(ui: &mut egui::Ui, mut c: PatchbayCtx, st: &mut UiState) -> Option<Action> {
-    let (lcd, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
-    paint_lcd(ui.painter(), lcd);
+    let (tray, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+    paint_tray(ui.painter(), tray);
 
-    let inner = lcd.shrink(4.0);
+    let inner = tray.shrink(4.0);
     let mut action = None;
     let mut child = ui.new_child(UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)));
     child.set_clip_rect(inner);
     // The layout shrinks to fit, so this only scrolls as a last resort: then with a solid bar and
-    // no fade (the fade is painted in the chassis colour, a grey band across the LCD).
+    // no fade (the fade is painted in the chassis colour, a grey band across the tray).
     let scroll = &mut child.spacing_mut().scroll;
     *scroll = egui::style::ScrollStyle::solid();
     scroll.fade.strength = 0.0;
     egui::ScrollArea::vertical().auto_shrink(false).show(&mut child, |ui| {
-        action = canvas(ui, &mut c, st, inner.height(), lcd);
+        action = canvas(ui, &mut c, st, inner.height(), tray);
     });
     if let Some((text, t)) = st.notice() {
-        paint_notice(ui.ctx(), lcd, text, t);
+        paint_notice(ui.ctx(), tray, text, t);
     }
     action.or_else(|| keyboard(ui, &c, st))
 }
 
-/// A brief message across the top of the LCD, fading out at the end of its time.
-fn paint_notice(ctx: &egui::Context, lcd: Rect, text: &str, t: f32) {
+/// A brief message across the top of the tray, fading out at the end of its time.
+fn paint_notice(ctx: &egui::Context, tray: Rect, text: &str, t: f32) {
     ctx.request_repaint();
-    let mut p = ctx.layer_painter(LayerId::new(Order::Foreground, egui::Id::new("patch_notice"))).with_clip_rect(lcd);
+    let mut p = ctx.layer_painter(LayerId::new(Order::Foreground, egui::Id::new("patch_notice"))).with_clip_rect(tray);
     p.multiply_opacity(((1.0 - t) / 0.2).min(1.0));
     let font = FontId::monospace(11.0);
     let galley = p.layout_no_wrap(text.to_uppercase(), font, theme::ORANGE);
-    let rect = Rect::from_center_size(pos2(lcd.center().x, lcd.top() + 24.0), galley.size() + vec2(24.0, 12.0));
+    let rect = Rect::from_center_size(pos2(tray.center().x, tray.top() + 24.0), galley.size() + vec2(24.0, 12.0));
     p.rect(rect, CornerRadius::same(2), theme::KEY_DARK_LOW, Stroke::new(1.0, theme::ORANGE), StrokeKind::Inside);
     p.galley(rect.center() - galley.size() / 2.0, galley, theme::ORANGE);
 }
 
-/// Everything inside the LCD: cables, nodes, ⊕ buttons, the drag, the add menu.
-fn canvas(ui: &mut egui::Ui, c: &mut PatchbayCtx, st: &mut UiState, view_height: f32, lcd: Rect) -> Option<Action> {
+/// Everything on the tray: cables, nodes, ⊕ buttons, the drag, the add menu.
+fn canvas(ui: &mut egui::Ui, c: &mut PatchbayCtx, st: &mut UiState, view_height: f32, tray: Rect) -> Option<Action> {
     let mut action = None;
     let ctx = ui.ctx().clone();
     let pointer = ui.input(|i| i.pointer.latest_pos());
@@ -135,7 +146,7 @@ fn canvas(ui: &mut egui::Ui, c: &mut PatchbayCtx, st: &mut UiState, view_height:
     let area = view.shrink(f.margin);
     let mut slots = if empty { empty_layout(area, f) } else { layout(n_nodes, area, node, gap) };
     // Onto the dot grid (a nudge of at most half a dot, which the margin takes).
-    let origin = lattice_origin(lcd);
+    let origin = lattice_origin(tray);
     let first = slots[0].min;
     let snapped = origin + ((first - origin) / DOT).round() * DOT;
     for s in &mut slots {
@@ -308,9 +319,9 @@ fn canvas(ui: &mut egui::Ui, c: &mut PatchbayCtx, st: &mut UiState, view_height:
             let s = item_slots[k];
             let x = if right { s.right() + gap.x / 2.0 } else { s.left() - gap.x / 2.0 };
             let bar = Rect::from_min_max(pos2(x - 2.0, s.top() - 6.0), pos2(x + 2.0, s.bottom() + 6.0));
-            painter.rect_filled(bar, CornerRadius::same(2), theme::ORANGE);
+            painter.rect_filled(bar, CornerRadius::same(1), theme::ORANGE);
         }
-        let mut fg = ctx.layer_painter(LayerId::new(Order::Tooltip, ui.id().with("patch_drag"))).with_clip_rect(lcd);
+        let mut fg = ctx.layer_painter(LayerId::new(Order::Tooltip, ui.id().with("patch_drag"))).with_clip_rect(tray);
         fg.multiply_opacity(0.8);
         let look = NodeLook { index: d.from, level: st.levels.module(d.id), selected: true, hovered: false, pressed: false, running: c.running };
         paint_module(&fg, Rect::from_min_size(p - d.grab, node), item, &look);
@@ -428,7 +439,7 @@ fn keyboard(ui: &egui::Ui, c: &PatchbayCtx, st: &mut UiState) -> Option<Action> 
     None
 }
 
-/// Sizes for `n_nodes` in an LCD view of `view`:
+/// Sizes for `n_nodes` in a tray view of `view`:
 /// - the whole chain on one row at full size (`grow`): keys grow into the room, up to `NODE_MAX`;
 /// - otherwise full-height keys, narrowing the gaps and then the keys while that saves a row;
 /// - and if those rows do not fit the height, compact keys, scrolling only when even the
@@ -564,7 +575,7 @@ impl Cable {
     fn paint(&self, p: &Painter, hot: bool) {
         // Grey when silent, lighting up orange with the signal that flows through it.
         let lit = if hot { 1.0 } else { meter_fraction(self.level).powf(1.5) };
-        p.add(Shape::line(self.points.clone(), Stroke::new(3.0, theme::INK_DIM.gamma_multiply(0.7))));
+        p.add(Shape::line(self.points.clone(), Stroke::new(3.0, theme::CABLE)));
         if lit > 0.01 {
             p.add(Shape::line(self.points.clone(), Stroke::new(3.0, theme::ORANGE.gamma_multiply(lit))));
         }
@@ -572,7 +583,7 @@ impl Cable {
 
     /// A cable that isn't there yet (the empty rack's placeholder).
     fn paint_dashed(&self, p: &Painter) {
-        p.extend(Shape::dashed_line(&self.points, Stroke::new(2.0, theme::INK_DIM), 6.0, 5.0));
+        p.extend(Shape::dashed_line(&self.points, Stroke::new(2.0, theme::CABLE), 6.0, 5.0));
     }
 }
 
@@ -597,23 +608,26 @@ fn meter_fraction(level: f32) -> f32 {
     ((20.0 * level.max(1e-6).log10() + 60.0) / 60.0).clamp(0.0, 1.0)
 }
 
-/// Where the LCD's dot lattice starts.
-fn lattice_origin(lcd: Rect) -> Pos2 {
-    (lcd.min + Vec2::splat(DOT / 2.0)).round()
+/// Where the tray's dot lattice starts.
+fn lattice_origin(tray: Rect) -> Pos2 {
+    (tray.min + Vec2::splat(DOT / 2.0)).round()
 }
 
-fn paint_lcd(p: &Painter, lcd: Rect) {
-    p.rect_filled(lcd.expand(3.0), CornerRadius::same(13), theme::SPEAKER);
-    p.rect_filled(lcd, CornerRadius::same(10), theme::LCD);
-    // Inner shadow: a faint rim just inside the bezel.
-    p.rect_stroke(lcd.shrink(1.0), CornerRadius::same(9), Stroke::new(1.0, theme::LCD_DIM), StrokeKind::Inside);
-    let o = lattice_origin(lcd);
+/// The tray: a lighter panel set into the chassis, square-cornered like the other printed
+/// panels, with a hairline edge, a shaded top rim (it sits a little below the chassis) and a
+/// printed dot grid.
+fn paint_tray(p: &Painter, tray: Rect) {
+    p.rect_filled(tray, CornerRadius::same(TRAY_RADIUS), theme::TRAY);
+    let rim = Rect::from_min_size(tray.min, vec2(tray.width(), 2.0));
+    p.rect_filled(rim, CornerRadius { nw: TRAY_RADIUS, ne: TRAY_RADIUS, sw: 0, se: 0 }, theme::TRAY_SHADE);
+    p.rect_stroke(tray, CornerRadius::same(TRAY_RADIUS), Stroke::new(1.0, theme::RULE), StrokeKind::Inside);
+    let o = lattice_origin(tray);
     let dot = Vec2::splat(1.5);
     let mut y = o.y + DOT;
-    while y < lcd.bottom() - DOT / 2.0 {
+    while y < tray.bottom() - DOT / 2.0 {
         let mut x = o.x + DOT;
-        while x < lcd.right() - DOT / 2.0 {
-            p.rect_filled(Rect::from_center_size(pos2(x, y), dot), CornerRadius::ZERO, theme::LCD_DIM);
+        while x < tray.right() - DOT / 2.0 {
+            p.rect_filled(Rect::from_center_size(pos2(x, y), dot), CornerRadius::ZERO, theme::TRAY_DOT);
             x += DOT;
         }
         y += DOT;
@@ -630,35 +644,58 @@ struct NodeLook {
     running: bool,
 }
 
+/// A key on the tray: its shadow, its lip and its face, which sinks by the lip when pressed.
+/// Returns the face.
+fn paint_key(p: &Painter, rect: Rect, face: Color32, lip: Color32, pressed: bool) -> Rect {
+    const LIP: f32 = 2.0;
+    let radius = CornerRadius::same(KEY_RADIUS);
+    p.rect_filled(rect.translate(vec2(0.0, 1.0)), radius, theme::KEY_SHADOW);
+    p.rect_filled(rect, radius, lip);
+    let body = Rect::from_min_max(rect.min + vec2(0.0, if pressed { LIP } else { 0.0 }), rect.max - vec2(0.0, LIP));
+    p.rect_filled(body, radius, face);
+    body
+}
+
+/// The orange ring around the selected key.
+fn paint_selected(p: &Painter, rect: Rect) {
+    p.rect_stroke(rect.expand(4.0), CornerRadius::same(KEY_RADIUS + 2), Stroke::new(2.0, theme::ORANGE), StrokeKind::Outside);
+}
+
+/// A meter set into a key: a thin strip of LCD with the pixel meter in it.
+fn paint_key_meter(p: &Painter, meter: Rect, level: f32) {
+    p.rect_filled(meter.expand(2.0), CornerRadius::same(1), theme::LCD);
+    widgets::paint_pixel_meter(p, meter, level, false);
+}
+
 /// Draw a module node as a dark key. Returns the centre of its On LED. Scales from compact
 /// (48 px) to grown (96 px) keys: a top line (number, status), the title, the meter.
 fn paint_module(p: &Painter, rect: Rect, item: &Item, look: &NodeLook) -> Pos2 {
-    const LIP: f32 = 2.0;
     let missing = matches!(item.body, Body::Missing(_));
     let on = item.shared.enabled.load(Ordering::Relaxed) && !missing;
     let compact = rect.height() < 64.0;
     let pad = if compact { 6.0 } else { 8.0 };
-    let radius = CornerRadius::same(8);
     if look.selected {
-        p.rect_stroke(rect.expand(4.0), CornerRadius::same(11), Stroke::new(2.0, theme::ORANGE), StrokeKind::Outside);
+        paint_selected(p, rect);
     }
-    let body = Rect::from_min_max(rect.min + vec2(0.0, if look.pressed { LIP } else { 0.0 }), rect.max - vec2(0.0, LIP));
-    if missing {
-        // Not a real key: a hollow, dashed outline.
-        p.rect_filled(rect, radius, theme::KEY_DARK_LOW);
-        p.extend(Shape::dashed_line(&rounded_path(rect.shrink(1.0), 8.0), Stroke::new(1.5, theme::LCD_RED.gamma_multiply(0.8)), 5.0, 4.0));
+    let body = if missing {
+        // Not a real key: an empty socket in the tray with a dashed red outline.
+        p.rect_filled(rect, CornerRadius::same(KEY_RADIUS), theme::TRAY_SHADE);
+        p.extend(Shape::dashed_line(&rounded_path(rect.shrink(1.0), KEY_RADIUS as f32), Stroke::new(1.5, theme::DANGER), 5.0, 4.0));
+        Rect::from_min_max(rect.min, rect.max - vec2(0.0, 2.0))
     } else {
-        p.rect_filled(rect, radius, theme::KEY_DARK_LOW);
-        p.rect_filled(body, radius, theme::KEY_DARK);
-    }
+        paint_key(p, rect, theme::KEY_DARK, theme::KEY_DARK_LOW, look.pressed)
+    };
     if look.hovered && !look.selected {
-        p.rect_stroke(body, radius, Stroke::new(1.0, theme::INK_DIM), StrokeKind::Inside);
+        let c = if missing { theme::INK_DIM } else { theme::LCD_TEXT_DIM.gamma_multiply(0.5) };
+        p.rect_stroke(body, CornerRadius::same(KEY_RADIUS), Stroke::new(1.0, c), StrokeKind::Inside);
     }
+    // Printed on a dark key, or on the bare tray for an empty socket.
+    let (ink, ink_dim, red) = if missing { (theme::INK, theme::INK_DIM, theme::DANGER) } else { (theme::LCD_WHITE, theme::LCD_TEXT_DIM, theme::LCD_RED) };
 
     let color = theme::kind_color(item.kind_id());
     if !missing {
         let stripe = Rect::from_min_max(body.left_top() + vec2(8.0, pad + 2.0), pos2(body.left() + 11.0, body.bottom() - pad - 2.0));
-        p.rect_filled(stripe, CornerRadius::same(2), if on { color } else { color.gamma_multiply(0.35) });
+        p.rect_filled(stripe, CornerRadius::same(1), if on { color } else { color.gamma_multiply(0.35) });
     }
 
     let x = body.left() + 18.0;
@@ -671,15 +708,15 @@ fn paint_module(p: &Painter, rect: Rect, item: &Item, look: &NodeLook) -> Pos2 {
 
     // Top line: position, then what is wrong (or OFF).
     let top = body.top() + pad;
-    p.text(pos2(x, top), Align2::LEFT_TOP, format!("{:02}", look.index + 1), small.clone(), theme::LCD_TEXT_DIM);
+    p.text(pos2(x, top), Align2::LEFT_TOP, format!("{:02}", look.index + 1), small.clone(), ink_dim);
     let status = if missing {
-        Some(("MISSING".to_string(), theme::LCD_RED))
+        Some(("MISSING".to_string(), red))
     } else if let Some(e) = &item.error {
-        Some((e.to_uppercase(), theme::LCD_RED))
+        Some((e.to_uppercase(), red))
     } else if look.running && !item.live {
         Some(("NOT RUNNING".to_string(), theme::LCD_YELLOW))
     } else if !on {
-        Some(("OFF".to_string(), theme::LCD_TEXT_DIM))
+        Some(("OFF".to_string(), ink_dim))
     } else {
         None
     };
@@ -691,7 +728,7 @@ fn paint_module(p: &Painter, rect: Rect, item: &Item, look: &NodeLook) -> Pos2 {
     // Title.
     let title = if missing { "UNKNOWN MODULE".to_string() } else { item.title().to_uppercase() };
     let title_y = top + if compact { 11.0 } else { 14.0 };
-    p.text(pos2(x, title_y), Align2::LEFT_TOP, fit_text(&title, ((body.right() - pad - x) / char_w) as usize), title_font, if on || missing { theme::LCD_WHITE } else { theme::LCD_TEXT_DIM });
+    p.text(pos2(x, title_y), Align2::LEFT_TOP, fit_text(&title, ((body.right() - pad - x) / char_w) as usize), title_font, if on || missing { ink } else { ink_dim });
 
     // Bottom: the meter, or for an unknown module the kind it was saved as.
     let bottom = body.bottom() - pad;
@@ -699,18 +736,17 @@ fn paint_module(p: &Painter, rect: Rect, item: &Item, look: &NodeLook) -> Pos2 {
         let kind = item.kind_id();
         let name = item.title();
         let what = if name != kind { format!("{kind} · {name}") } else { kind.to_string() };
-        p.text(pos2(x, bottom), Align2::LEFT_BOTTOM, fit_text(&what, ((body.right() - pad - x) / 5.4) as usize), small, theme::LCD_TEXT_DIM);
+        p.text(pos2(x, bottom), Align2::LEFT_BOTTOM, fit_text(&what, ((body.right() - pad - x) / 5.4) as usize), small, ink_dim);
     } else {
         let meter = Rect::from_min_max(pos2(x, bottom - 6.0), pos2(body.right() - pad - 2.0, bottom));
-        p.rect_filled(meter.expand(2.0), CornerRadius::same(2), theme::LCD);
-        widgets::paint_pixel_meter(p, meter, if on { look.level } else { 0.0 }, false);
+        paint_key_meter(p, meter, if on { look.level } else { 0.0 });
     }
 
     if on {
         p.circle_filled(led, led_r + 3.0, theme::ORANGE.gamma_multiply(0.22));
         p.circle_filled(led, led_r, theme::ORANGE);
     } else if missing {
-        p.circle(led, led_r, theme::KEY_DARK_LOW, Stroke::new(1.5, theme::LCD_RED));
+        p.circle(led, led_r, theme::TRAY, Stroke::new(1.5, theme::DANGER));
     } else {
         p.circle(led, led_r, theme::KEY_DARK_LOW, Stroke::new(1.0, theme::LCD_TEXT_DIM));
     }
@@ -731,60 +767,57 @@ fn rounded_path(r: Rect, radius: f32) -> Vec<Pos2> {
     path
 }
 
-/// Draw MIC or OUTPUT: a rounder key with a socket on its outer side.
+/// Draw MIC or OUTPUT: a light key (the chain's two ends, set apart from the dark module keys)
+/// with a socket on its outer side.
 #[allow(clippy::too_many_arguments)]
 fn paint_end(p: &Painter, rect: Rect, label: &str, level: f32, note: Option<&str>, is_input: bool, selected: bool, hovered: bool) {
-    let r = (rect.height() / 2.0) as u8;
     if selected {
-        p.rect_stroke(rect.expand(4.0), CornerRadius::same(r + 4), Stroke::new(2.0, theme::ORANGE), StrokeKind::Outside);
+        paint_selected(p, rect);
     }
-    p.rect_filled(rect, CornerRadius::same(r), theme::KEY_DARK_LOW);
-    let body = Rect::from_min_max(rect.min, rect.max - vec2(0.0, 2.0));
-    p.rect_filled(body, CornerRadius::same(r), theme::KEY_DARK);
-    if hovered && !selected {
-        p.rect_stroke(body, CornerRadius::same(r), Stroke::new(1.0, theme::INK_DIM), StrokeKind::Inside);
-    }
+    let body = paint_key(p, rect, theme::KEY_LIGHT, theme::KEY_LIGHT_LOW, false);
+    let edge = if hovered && !selected { theme::INK_DIM } else { theme::RULE };
+    p.rect_stroke(rect, CornerRadius::same(KEY_RADIUS), Stroke::new(1.0, edge), StrokeKind::Inside);
 
-    // The socket, on the outer side.
+    // The socket, on the outer side: a dark hole in a grey nut.
     let h = body.height();
     let socket_r = (h * 0.24).clamp(9.0, 16.0);
     let sx = if is_input { body.left() + h / 2.0 } else { body.right() - h / 2.0 };
     let socket = pos2(sx, body.center().y);
-    p.circle(socket, socket_r, theme::LCD, Stroke::new(2.0, theme::LCD_WHITE));
-    p.circle_filled(socket, socket_r * 0.4, theme::KEY_DARK_LOW);
+    p.circle(socket, socket_r, theme::KEY_DARK, Stroke::new(2.5, theme::KNOB_TRACK));
+    p.circle_filled(socket, socket_r * 0.4, theme::LCD);
 
     let compact = h < 56.0;
     let gap = socket_r + 7.0;
     let (x0, x1) = if is_input { (sx + gap, body.right() - 14.0) } else { (body.left() + 14.0, sx - gap) };
     let top = body.top() + if compact { 7.0 } else { 10.0 };
-    p.text(pos2(x0, top), Align2::LEFT_TOP, label, FontId::monospace(if compact { 11.0 } else { 12.0 }), theme::LCD_WHITE);
+    p.text(pos2(x0, top), Align2::LEFT_TOP, label, theme::bold(if compact { 11.0 } else { 12.0 }), theme::INK);
     let bottom = body.bottom() - if compact { 8.0 } else { 10.0 };
     match note {
         // Compact: the note takes the meter's place.
         Some(note) if compact => {
-            p.text(pos2(x0, bottom), Align2::LEFT_BOTTOM, note, FontId::monospace(9.0), theme::ORANGE);
+            p.text(pos2(x0, bottom), Align2::LEFT_BOTTOM, note, theme::bold(9.0), theme::ORANGE);
         }
         _ => {
             if let Some(note) = note {
-                p.text(pos2(x0, top + 14.0), Align2::LEFT_TOP, note, FontId::monospace(9.0), theme::ORANGE);
+                p.text(pos2(x0, top + 14.0), Align2::LEFT_TOP, note, theme::bold(9.0), theme::ORANGE);
             }
-            let meter = Rect::from_min_max(pos2(x0, bottom - 6.0), pos2(x1, bottom));
-            p.rect_filled(meter.expand(2.0), CornerRadius::same(2), theme::LCD);
-            widgets::paint_pixel_meter(p, meter, level, false);
+            paint_key_meter(p, Rect::from_min_max(pos2(x0, bottom - 6.0), pos2(x1, bottom)), level);
         }
     }
 
     jack(p, if is_input { pos2(rect.right(), body.center().y) } else { pos2(rect.left(), body.center().y) });
 }
 
-/// Where a cable plugs in.
+/// Where a cable plugs in: a dark socket, ringed in the tray's colour so it reads on a dark key
+/// as well as on the tray.
 fn jack(p: &Painter, at: Pos2) {
-    p.circle(at, 4.5, theme::LCD_WHITE, Stroke::new(1.5, theme::KEY_DARK_LOW));
+    p.circle(at, 4.5, theme::KEY_DARK_LOW, Stroke::new(1.5, theme::TRAY));
 }
 
 /// The round ⊕ on a hovered cable.
 fn paint_plus(p: &Painter, at: Pos2, hot: bool) {
-    let (fill, ink) = if hot { (theme::ORANGE, theme::LCD) } else { (theme::KEY_DARK, theme::ORANGE) };
+    let (fill, ink) = if hot { (theme::ORANGE, theme::KEY_LIGHT) } else { (theme::KEY_LIGHT, theme::ORANGE) };
+    p.circle_filled(at + vec2(0.0, 1.0), PLUS_RADIUS, theme::KEY_SHADOW);
     p.circle(at, PLUS_RADIUS, fill, Stroke::new(1.5, theme::ORANGE));
     plus_sign(p, at, 5.0, Stroke::new(2.0, ink));
 }
@@ -794,18 +827,16 @@ fn plus_sign(p: &Painter, at: Pos2, arm: f32, stroke: Stroke) {
     p.line_segment([at - vec2(0.0, arm), at + vec2(0.0, arm)], stroke);
 }
 
-/// The dashed "add your first module" box of an empty rack.
+/// The dashed "add your first module" box of an empty rack: an empty socket in the tray.
 fn paint_first_target(p: &Painter, rect: Rect, hot: bool) {
-    let color = if hot { theme::ORANGE } else { theme::LCD_TEXT_DIM };
-    if hot {
-        p.rect_filled(rect, CornerRadius::same(10), theme::ORANGE.gamma_multiply(0.08));
-    }
+    let (color, ink) = if hot { (theme::ORANGE, theme::ORANGE) } else { (theme::INK_DIM, theme::INK) };
+    p.rect_filled(rect, CornerRadius::same(KEY_RADIUS), if hot { theme::ORANGE.gamma_multiply(0.08) } else { theme::TRAY_SHADE });
     let r = rect.shrink(1.0);
-    p.extend(Shape::dashed_line(&rounded_path(r, 8.0), Stroke::new(2.0, color), 8.0, 6.0));
+    p.extend(Shape::dashed_line(&rounded_path(r, KEY_RADIUS as f32), Stroke::new(2.0, color), 8.0, 6.0));
     let c = rect.center();
     plus_sign(p, c - vec2(0.0, 14.0), 10.0, Stroke::new(3.0, color));
     let text = if rect.width() >= 200.0 { "ADD YOUR FIRST MODULE" } else { "ADD A MODULE" };
-    p.text(c + vec2(0.0, 14.0), Align2::CENTER_CENTER, text, FontId::monospace(12.0), if hot { theme::ORANGE } else { theme::LCD_WHITE });
+    p.text(c + vec2(0.0, 14.0), Align2::CENTER_CENTER, text, theme::bold(12.0), ink);
 }
 
 /// Cut `s` to at most `max` characters, marking the cut.
@@ -830,14 +861,16 @@ mod tests {
     #[test]
     fn narrower_nodes_save_a_row() {
         // MIC, three modules, OUTPUT beside a docked inspector: one row, not a lone OUTPUT below.
-        let view = vec2(790.0, 450.0);
-        let f = fit(5, view, true);
-        assert!(f.node.x >= MIN_NODE_X && f.node.x < NODE.x && f.node.y == NODE.y);
-        assert_eq!(rows_of(5, view, f), 1);
+        for width in [790.0, 760.0, 740.0] {
+            let view = vec2(width, 450.0);
+            let f = fit(5, view, true);
+            assert!(f.node.x >= MIN_NODE_X && f.node.x < NODE.x && f.node.y == NODE.y);
+            assert_eq!(rows_of(5, view, f), 1, "wraps at {width}");
+        }
     }
 
     #[test]
-    fn keys_grow_on_a_wide_lcd() {
+    fn keys_grow_on_a_wide_canvas() {
         let f = fit(5, vec2(1300.0, 700.0), true);
         assert!(f.node.x > NODE.x && f.node.x <= NODE_MAX.x && f.node.y <= NODE_MAX.y);
         assert_eq!(f.node.x % 8.0, 0.0);
@@ -849,7 +882,7 @@ mod tests {
 
     #[test]
     fn a_full_rack_fits_a_small_window() {
-        // 16 modules + MIC + OUTPUT in the LCD of a 900×560 window.
+        // 16 modules + MIC + OUTPUT on the tray of a 900×560 window.
         let view = vec2(490.0, 378.0);
         let f = fit(18, view, true);
         let area = Rect::from_min_size(Pos2::ZERO, view).shrink(f.margin);

@@ -1,5 +1,5 @@
-//! "K.O. II hardware" look: a light grey chassis, a black LCD window, chunky keys and one hot
-//! orange. Every colour the GUI uses is a constant here; panels never hard-code colours.
+//! "K.O. II hardware" look: a light grey chassis with a lighter tray for the patchbay, small black
+//! LCD windows, chunky keys and one hot orange. Every colour the GUI uses is a constant here; panels never hard-code colours.
 //!
 //! Text is Space Mono (SIL OFL 1.1, `assets/fonts/OFL.txt`), with egui's own fonts behind it as
 //! fallbacks for symbols and emoji.
@@ -20,7 +20,20 @@ pub const KEY_DARK_LOW: Color32 = Color32::from_rgb(0x1C, 0x1C, 0x1C);
 pub const KEY_LIGHT: Color32 = Color32::from_rgb(0xF2, 0xF2, 0xF0);
 pub const ORANGE: Color32 = Color32::from_rgb(0xFF, 0x5A, 0x1F);
 
-// The LCD window (the patchbay canvas). The pixel colours are only used inside it.
+// The patchbay tray: a lighter panel set into the chassis, with a printed dot grid. Dark keys,
+// grey cables and dark jacks sit on it.
+pub const TRAY: Color32 = Color32::from_rgb(0xF3, 0xF3, 0xF0);
+/// The tray's recessed top edge, and the floor of an empty (missing-module) socket.
+pub const TRAY_SHADE: Color32 = Color32::from_rgb(0xE2, 0xE2, 0xDE);
+pub const TRAY_DOT: Color32 = Color32::from_rgb(0xC6, 0xC6, 0xC1);
+/// A silent cable on the tray (it lights up orange with signal).
+pub const CABLE: Color32 = Color32::from_rgb(0x8C, 0x8C, 0x87);
+/// The soft shadow a key casts on the tray.
+pub const KEY_SHADOW: Color32 = Color32::from_black_alpha(34);
+/// The lip under a light key (MIC / OUTPUT).
+pub const KEY_LIGHT_LOW: Color32 = Color32::from_rgb(0xC4, 0xC4, 0xBF);
+
+// The small LCD windows (latency readout, help strip, meter strips) and the colours lit in them.
 pub const LCD: Color32 = Color32::from_rgb(0x0E, 0x0E, 0x0E);
 pub const LCD_DIM: Color32 = Color32::from_rgb(0x2A, 0x2A, 0x2A);
 pub const LCD_RED: Color32 = Color32::from_rgb(0xFF, 0x3B, 0x30);
@@ -30,7 +43,7 @@ pub const LCD_WHITE: Color32 = Color32::from_rgb(0xF4, 0xF4, 0xF4);
 pub const LCD_GREEN: Color32 = Color32::from_rgb(0x3D, 0xDC, 0x84);
 /// SHODAN's own colour: the cyan of her cyberspace. Orange stays the "state" colour.
 pub const LCD_CYAN: Color32 = Color32::from_rgb(0x2E, 0xE6, 0xD6);
-/// Secondary text on dark keys and the LCD (node numbers, OFF).
+/// Secondary text on dark keys and LCDs (node numbers, OFF).
 pub const LCD_TEXT_DIM: Color32 = Color32::from_rgb(0x9A, 0x9A, 0x96);
 
 // Older names, kept for widgets that still use them.
@@ -72,7 +85,7 @@ pub fn bold(size: f32) -> FontId {
 const REGULAR: &str = "space_mono";
 const BOLD: &str = "space_mono_bold";
 
-/// The colour a module kind is drawn with inside the LCD (its node stripe, its cable).
+/// The colour a module kind is drawn with (its key's stripe on the patchbay, the inspector chip).
 pub fn kind_color(kind_id: &str) -> Color32 {
     match kind_id {
         "shodan_core" => LCD_CYAN,
