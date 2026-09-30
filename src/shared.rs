@@ -1,9 +1,7 @@
 //! State shared between the GUI thread and the audio thread (all lock-free atomics).
 
-use crate::params::Params;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-
-pub const SLOT_COUNT: usize = 2;
+use crate::params::{Params, io};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Default)]
 pub struct AtomicF32(AtomicU32);
@@ -43,26 +41,20 @@ pub struct Meters {
     pub underruns: AtomicU32,
     /// Age of the oldest mic sample when its callback ran (driver capture delay), ms.
     pub input_ms: AtomicF32,
-    /// Delay added by the effect itself (pitch-shifter window), ms.
+    /// Delay added by the rack modules, ms.
     pub dsp_ms: AtomicF32,
     /// Buffered + device playback delay for [main output, monitor], ms.
     pub output_ms: [AtomicF32; 2],
 }
 
-pub struct SlotShared {
-    pub enabled: AtomicBool,
-    pub mix: AtomicF32,
-}
-
-impl Default for SlotShared {
-    fn default() -> Self {
-        Self { enabled: AtomicBool::new(true), mix: AtomicF32::new(1.0) }
-    }
-}
-
-#[derive(Default)]
 pub struct Shared {
-    pub params: Params,
+    /// Input gain, output gain and bypass: the fixed stage around the rack.
+    pub io: Params,
     pub meters: Meters,
-    pub slots: [SlotShared; SLOT_COUNT],
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self { io: Params::new(io::DEFS), meters: Meters::default() }
+    }
 }

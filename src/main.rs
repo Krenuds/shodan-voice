@@ -4,6 +4,7 @@
 mod audio;
 mod dsp;
 mod gui;
+mod modules;
 mod params;
 #[cfg(feature = "clap-host")]
 mod plugins;

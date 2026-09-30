@@ -1,7 +1,7 @@
 mod app;
 mod knob;
-#[cfg(feature = "clap-host")]
-mod plugin_panel;
+mod param_ui;
+mod rack;
 mod theme;
 
 pub fn run() -> eframe::Result {

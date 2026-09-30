@@ -1,6 +1,7 @@
 //! Offline processing: `shodan-voice --render in.wav out.wav [--preset NAME] [--seed N] [--set knob=value ...]`.
 
 use crate::audio::engine::Engine;
+use crate::modules;
 use crate::presets;
 use crate::shared::Shared;
 use std::sync::Arc;
@@ -24,18 +25,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
     };
 
     let shared = Arc::new(Shared::default());
+    let rack = modules::default_instances();
+    let targets = presets::targets(&shared.io, rack.iter().map(|i| &i.shared.params));
     let preset = presets::builtin(&preset).ok_or_else(|| {
         let names: Vec<_> = presets::BUILTIN.iter().map(|p| p.name).collect();
         format!("unknown preset '{preset}', choose one of: {}", names.join(", "))
     })?;
-    preset.apply(&shared.params);
+    preset.apply(&targets);
     for o in &overrides {
         let (key, value) = o.split_once('=').ok_or_else(|| format!("--set expects knob=value, got '{o}'"))?;
-        let i = crate::params::DEFS.iter().position(|d| d.key == key).ok_or_else(|| {
-            let keys: Vec<_> = crate::params::DEFS.iter().map(|d| d.key).collect();
-            format!("unknown knob '{key}', choose one of: {}", keys.join(", "))
-        })?;
-        shared.params.set_index(i, value.parse().map_err(|e| format!("bad value for {key}: {e}"))?);
+        let value = value.parse().map_err(|e| format!("bad value for {key}: {e}"))?;
+        if !targets.iter().any(|p| p.set_key(key, value)) {
+            let keys: Vec<_> = targets.iter().flat_map(|p| p.defs()).map(|d| d.key).collect();
+            return Err(format!("unknown knob '{key}', choose one of: {}", keys.join(", ")));
+        }
     }
 
     let mut reader = hound::WavReader::open(input).map_err(|e| format!("{input}: {e}"))?;
@@ -51,7 +54,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     .map_err(|e| format!("{input}: {e}"))?;
     let mono: Vec<f32> = samples.chunks(channels).map(|f| f.iter().sum::<f32>() / channels as f32).collect();
 
-    let mut engine = Engine::new(spec.sample_rate as f32, shared.clone(), seed, None);
+    let sr = spec.sample_rate as f32;
+    let mut engine = Engine::new(sr, shared.clone(), modules::build(&rack, sr, seed, &shared), None);
     let (mut l, mut r) = (vec![0.0; mono.len()], vec![0.0; mono.len()]);
     for (i, chunk) in mono.chunks(512).enumerate() {
         let s = i * 512;

@@ -1,10 +1,14 @@
-//! Main window: devices, meters, the SHODAN knobs, presets, plugin slots.
+//! The Voice window (devices, meters, presets, the SHODAN knobs) and the Rack window.
 
-use super::knob::{KNOB_WIDTH, Knob, meter};
+use super::knob::{KNOB_WIDTH, meter};
+use super::param_ui::{knob_count, param_knobs};
+use super::rack::{Live, Rack};
 use super::theme;
-use crate::audio::engine::{Command, SlotLink, SlotProcessor};
+use crate::audio::engine::{Command, RackLink};
 use crate::audio::io::{self, AudioSettings, DeviceInfo, Running};
-use crate::params::{DEFS, Kind, P, ParamDef};
+use crate::audio::module::RackModule;
+use crate::modules;
+use crate::params::{Params, io::P};
 use crate::presets::{self, Settings, Values};
 use crate::shared::Shared;
 use eframe::egui::{self, RichText};
@@ -12,7 +16,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-const GROUPS: &[&str] = &["Input", "Voice", "Glitch", "Pitch", "Voices", "Metal", "Lo-fi", "Output"];
+/// Knob cards of the Voice window: the I/O stage and the first SHODAN Core in the rack.
+const GROUPS: &[&str] = &["Input", "Voice", "Glitch", "Pitch", "Voices", "Output"];
 
 pub struct App {
     shared: Arc<Shared>,
@@ -23,9 +28,8 @@ pub struct App {
     audio_error: Option<String>,
     stream_errors: Vec<String>,
     cmd_tx: Option<rtrb::Producer<Command>>,
-    garbage_rx: Option<rtrb::Consumer<Box<dyn SlotProcessor>>>,
-    #[cfg(feature = "clap-host")]
-    slots: super::plugin_panel::Slots,
+    garbage_rx: Option<rtrb::Consumer<RackModule>>,
+    rack: Rack,
     preset_label: String,
     new_preset: String,
     glitches_seen: u32,
@@ -42,13 +46,15 @@ impl App {
     pub fn new(cc: &eframe::CreationContext) -> Self {
         theme::apply(&cc.egui_ctx);
         let shared = Arc::new(Shared::default());
-        let settings = Settings::load();
-        settings.knobs.apply(&shared.params);
+        let mut settings = Settings::load();
         if settings.knobs.0.is_empty() {
-            presets::BUILTIN[0].apply(&shared.params);
+            presets::BUILTIN[0].apply(&[&shared.io]);
+        } else {
+            settings.knobs.apply(&[&shared.io]);
         }
+        let mut rack = Rack::new(Instant::now().elapsed().as_nanos() as u64 ^ std::process::id() as u64);
+        rack.restore(&settings.rack_items(), &cc.egui_ctx);
 
-        let mut settings = settings;
         let outputs = io::list_outputs();
         if settings.knobs.0.is_empty() && settings.output_device.is_none() {
             // First run: send to the virtual cable if it's installed, never straight to speakers by choice.
@@ -66,8 +72,7 @@ impl App {
             stream_errors: Vec::new(),
             cmd_tx: None,
             garbage_rx: None,
-            #[cfg(feature = "clap-host")]
-            slots: Default::default(),
+            rack,
             preset_label: if settings.knobs.0.is_empty() { presets::BUILTIN[0].name.to_string() } else { "(last session)".into() },
             new_preset: String::new(),
             glitches_seen: 0,
@@ -79,8 +84,6 @@ impl App {
             last_save: Instant::now(),
             settings,
         };
-        #[cfg(feature = "clap-host")]
-        app.slots.restore(&app.settings.slots, &app.shared, &cc.egui_ctx);
         app.restart_audio();
         app
     }
@@ -89,38 +92,40 @@ impl App {
         self.audio = None;
         self.cmd_tx = None;
         self.garbage_rx = None;
-        #[cfg(feature = "clap-host")]
-        self.slots.audio_stopped();
+        self.rack.audio_stopped();
 
-        let (cmd_tx, cmd_rx) = rtrb::RingBuffer::new(16);
-        let (garbage_tx, garbage_rx) = rtrb::RingBuffer::new(16);
-        let link = SlotLink { commands: cmd_rx, garbage: garbage_tx };
+        let (cmd_tx, cmd_rx) = rtrb::RingBuffer::new(64);
+        let (garbage_tx, garbage_rx) = rtrb::RingBuffer::new(64);
+        let link = RackLink { commands: cmd_rx, garbage: garbage_tx };
         let cfg = AudioSettings {
             input: self.settings.input_device.clone(),
             output: self.settings.output_device.clone(),
             monitor: self.settings.monitor.then(|| self.settings.monitor_device.clone()),
         };
-        let seed = Instant::now().elapsed().as_nanos() as u64 ^ std::process::id() as u64;
-        match io::start(&cfg, self.shared.clone(), Some(link), seed) {
+        let (rack, shared) = (&mut self.rack, &self.shared);
+        match io::start(&cfg, shared.clone(), Some(link), |sample_rate| rack.build(sample_rate, shared)) {
             Ok(running) => {
                 self.audio_error = None;
-                let mut cmd_tx = cmd_tx;
-                #[cfg(feature = "clap-host")]
-                self.slots.audio_started(running.sample_rate, &mut cmd_tx);
                 self.cmd_tx = Some(cmd_tx);
                 self.garbage_rx = Some(garbage_rx);
                 self.audio = Some(running);
             }
-            Err(e) => self.audio_error = Some(e),
+            Err(e) => {
+                // Modules built for an engine that never started were dropped with it.
+                self.rack.audio_stopped();
+                self.audio_error = Some(e);
+            }
         }
     }
 
+    /// What presets and the saved knobs act on.
+    fn targets(&self) -> Vec<&Params> {
+        presets::targets(&self.shared.io, self.rack.params())
+    }
+
     fn save_settings(&mut self) {
-        self.settings.knobs = Values::capture(&self.shared.params);
-        #[cfg(feature = "clap-host")]
-        {
-            self.settings.slots = self.slots.save(&self.shared);
-        }
+        self.settings.knobs = Values::capture(&self.targets());
+        self.settings.rack = Some(self.rack.save());
         if let Err(e) = self.settings.save() {
             self.stream_errors.push(format!("could not save settings: {e}"));
         }
@@ -137,7 +142,7 @@ impl App {
             egui::ComboBox::from_id_salt("preset").width(170.0).selected_text(&self.preset_label).show_ui(ui, |ui| {
                 for p in presets::BUILTIN {
                     if ui.selectable_label(self.preset_label == p.name, p.name).clicked() {
-                        p.apply(&self.shared.params);
+                        p.apply(&self.targets());
                         self.preset_label = p.name.to_string();
                     }
                 }
@@ -148,10 +153,10 @@ impl App {
                 for (name, values) in &self.settings.user_presets {
                     ui.horizontal(|ui| {
                         if ui.selectable_label(&self.preset_label == name, name).clicked() {
-                            values.apply(&self.shared.params);
+                            values.apply(&presets::targets(&self.shared.io, self.rack.params()));
                             self.preset_label = name.clone();
                         }
-                        if ui.small_button("✕").on_hover_text("Delete preset").clicked() {
+                        if ui.small_button("🗙").on_hover_text("Delete preset").clicked() {
                             delete = Some(name.clone());
                         }
                     });
@@ -163,19 +168,24 @@ impl App {
             ui.add(egui::TextEdit::singleline(&mut self.new_preset).hint_text("new preset name").desired_width(130.0));
             if ui.add_enabled(!self.new_preset.trim().is_empty(), egui::Button::new("Save")).clicked() {
                 let name = self.new_preset.trim().to_string();
-                self.settings.user_presets.insert(name.clone(), Values::capture(&self.shared.params));
+                let values = Values::capture(&self.targets());
+                self.settings.user_presets.insert(name.clone(), values);
                 self.preset_label = name;
                 self.new_preset.clear();
                 self.save_settings();
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let bypass = self.shared.params.get(P::Bypass) > 0.5;
+                let bypass = self.shared.io.get(P::Bypass) > 0.5;
                 let (text, color) = if bypass { ("BYPASSED", theme::WARN) } else { ("ACTIVE", theme::ACCENT) };
                 let btn = egui::Button::new(RichText::new(text).monospace().strong().color(egui::Color32::BLACK)).fill(color).min_size(egui::vec2(110.0, 28.0));
                 let hint = if self._hotkeys.is_some() { "Toggle effect (F8 works globally)" } else { "Toggle effect" };
                 if ui.add(btn).on_hover_text(hint).clicked() {
-                    self.shared.params.set(P::Bypass, if bypass { 0.0 } else { 1.0 });
+                    self.shared.io.set(P::Bypass, if bypass { 0.0 } else { 1.0 });
+                }
+                ui.add_space(8.0);
+                if ui.selectable_label(self.settings.rack_open, "Rack").on_hover_text("Show the module rack: add, remove and reorder effects").clicked() {
+                    self.settings.rack_open = !self.settings.rack_open;
                 }
             });
         });
@@ -261,7 +271,7 @@ impl App {
                 text += &format!("  (mic {input:.0} + fx {dsp:.0} + out {:.0})", m.output_ms[if self.settings.monitor { 1 } else { 0 }].get());
                 let color = if self.latency[if self.settings.monitor { 1 } else { 0 }] > 60.0 { theme::WARN } else { theme::TEXT_DIM };
                 ui.label(RichText::new(text).monospace().small().color(color)).on_hover_text(format!(
-                    "Mic driver {input:.1} ms + effect {dsp:.1} ms (Grain/2) + buffered & output driver: main {:.1} ms, monitor {:.1} ms.\nLower the Grain knob to cut the effect's share. Windows shared-mode audio adds ~10 ms per device.",
+                    "Mic driver {input:.1} ms + rack {dsp:.1} ms (SHODAN Core: Grain/2) + buffered & output driver: main {:.1} ms, monitor {:.1} ms.\nLower the Grain knob to cut the effect's share. Windows shared-mode audio adds ~10 ms per device.",
                     m.output_ms[0].get(),
                     m.output_ms[1].get()
                 ));
@@ -269,21 +279,44 @@ impl App {
         });
     }
 
+    /// The parameter tables that have knobs in a Voice window card.
+    fn group_params(&self, group: &str) -> Vec<&Params> {
+        let core = self.rack.first(&modules::shodan::KIND).map(|m| &m.params);
+        std::iter::once(&self.shared.io).chain(core).filter(|p| knob_count(p, Some(group)) > 0).collect()
+    }
+
     fn knob_group(&self, ui: &mut egui::Ui, group: &str) {
         theme::card(ui, group, |ui| {
             ui.horizontal(|ui| {
-                for (i, d) in DEFS.iter().enumerate() {
-                    if d.group != group || d.kind == Kind::Toggle {
-                        continue;
-                    }
-                    let mut v = self.shared.params.get_index(i);
-                    let resp = Knob::new(&mut v, d.min, d.max, d.default, d.label).format(|v| format_value(d, v)).stepped(d.kind == Kind::Stepped).help(d.help).show(ui);
-                    if resp.changed() {
-                        self.shared.params.set_index(i, v);
-                    }
+                for params in self.group_params(group) {
+                    param_knobs(ui, params, Some(group));
                 }
             });
         });
+    }
+
+    fn rack_window(&mut self, ctx: &egui::Context) {
+        let builder = egui::ViewportBuilder::default().with_title("SHODAN Rack").with_inner_size([820.0, 720.0]).with_min_inner_size([480.0, 320.0]);
+        let changed = ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("rack"), builder, |ui, _class| {
+            if ui.input(|i| i.viewport().close_requested()) {
+                self.settings.rack_open = false;
+            }
+            let mut changed = false;
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::same(12))).show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+                    let live = match (&self.audio, self.cmd_tx.as_mut()) {
+                        (Some(audio), Some(tx)) => Some(Live { sr: audio.sample_rate, tx, app: &self.shared }),
+                        _ => None,
+                    };
+                    changed = self.rack.ui(ui, live);
+                });
+            });
+            changed
+        });
+        if changed {
+            self.save_settings();
+        }
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -318,8 +351,10 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        #[cfg(feature = "clap-host")]
-        self.slots.idle(self.garbage_rx.as_mut());
+        self.rack.idle(self.garbage_rx.as_mut());
+        if self.settings.rack_open {
+            self.rack_window(&ui.ctx().clone());
+        }
         if self.last_save.elapsed() > Duration::from_secs(30) {
             self.save_settings();
         }
@@ -341,12 +376,12 @@ impl eframe::App for App {
                 // Cards don't know their size before layout, so pack them into rows by hand.
                 let spacing = ui.spacing().item_spacing.x;
                 let card_width = |g: &str| {
-                    let n = DEFS.iter().filter(|d| d.group == g && d.kind != Kind::Toggle).count() as f32;
+                    let n = self.group_params(g).iter().map(|p| knob_count(p, Some(g))).sum::<usize>() as f32;
                     n * KNOB_WIDTH + (n - 1.0) * spacing + 20.0
                 };
                 let mut rows: Vec<Vec<&str>> = vec![Vec::new()];
                 let mut used = 0.0;
-                for g in GROUPS {
+                for g in GROUPS.iter().filter(|g| !self.group_params(g).is_empty()) {
                     let w = card_width(g) + spacing;
                     if used + w > ui.available_width() && !rows.last().unwrap().is_empty() {
                         rows.push(Vec::new());
@@ -362,10 +397,8 @@ impl eframe::App for App {
                         }
                     });
                 }
-                #[cfg(feature = "clap-host")]
-                {
-                    let sr = self.audio.as_ref().map(|a| a.sample_rate);
-                    self.slots.ui(ui, &self.shared, sr, self.cmd_tx.as_mut());
+                if self.rack.first(&modules::shodan::KIND).is_none() {
+                    ui.label(RichText::new("There is no SHODAN Core in the rack, so its knobs are hidden. Add one in the Rack window.").color(theme::TEXT_DIM));
                 }
             });
         });
@@ -407,29 +440,6 @@ fn device_combo(ui: &mut egui::Ui, id: &str, devices: &[DeviceInfo], selected: &
     changed
 }
 
-fn note_name(midi: f32) -> String {
-    const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-    let n = midi.round() as i32;
-    format!("{}{} {:.0}Hz", NAMES[n.rem_euclid(12) as usize], n.div_euclid(12) - 1, crate::dsp::lpc::midi_to_hz(n as f32))
-}
-
-fn format_value(d: &ParamDef, v: f32) -> String {
-    match d.unit {
-        "dB" => format!("{v:+.1} dB"),
-        "st" => format!("{v:+.1} st"),
-        "ms" => format!("{v:.0} ms"),
-        "ct" => format!("{v:.0} ct"),
-        "bit" => format!("{v:.1} bit"),
-        "x" => format!("{v:.0}x"),
-        "note" => note_name(v),
-        "Hz" if v >= 1000.0 => format!("{:.1} kHz", v / 1000.0),
-        "Hz" => format!("{v:.2} Hz"),
-        _ if d.kind == Kind::Stepped => format!("{v:.0}"),
-        _ if d.min < 0.0 => format!("{:+.0}%", v * 100.0),
-        _ => format!("{:.0}%", v * 100.0),
-    }
-}
-
 /// F8 toggles bypass from anywhere, even while a game has focus.
 fn register_hotkey(shared: &Arc<Shared>, ctx: &egui::Context) -> Option<global_hotkey::GlobalHotKeyManager> {
     use global_hotkey::hotkey::{Code, HotKey};
@@ -441,8 +451,8 @@ fn register_hotkey(shared: &Arc<Shared>, ctx: &egui::Context) -> Option<global_h
     let ctx = ctx.clone();
     GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
         if e.id == hotkey.id() && e.state == HotKeyState::Pressed {
-            let on = shared.params.get(P::Bypass) > 0.5;
-            shared.params.set(P::Bypass, if on { 0.0 } else { 1.0 });
+            let on = shared.io.get(P::Bypass) > 0.5;
+            shared.io.set(P::Bypass, if on { 0.0 } else { 1.0 });
             ctx.request_repaint();
         }
     }));

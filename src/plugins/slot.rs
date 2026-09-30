@@ -3,7 +3,7 @@
 use eframe::egui;
 use super::host::{HostMainThread, HostShared, ShodanHost};
 use super::window::PluginWindow;
-use crate::audio::engine::SlotProcessor;
+use crate::audio::module::{Module, ModuleCtx};
 use clack_extensions::audio_ports::{AudioPortInfoBuffer, AudioPortFlags, PluginAudioPorts};
 use clack_extensions::params::{ParamInfoBuffer, ParamInfoFlags};
 use clack_host::events::event_types::ParamValueEvent;
@@ -12,7 +12,7 @@ use std::ffi::CString;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
-pub const MAX_FRAMES: usize = 1024;
+pub const MAX_FRAMES: usize = crate::audio::module::MAX_BLOCK;
 
 #[derive(Clone, Debug)]
 pub struct ParamMeta {
@@ -102,7 +102,7 @@ impl LoadedPlugin {
     }
 
     /// Activate at the engine's sample rate and return the processor for the audio thread.
-    pub fn activate(&mut self, sample_rate: f64) -> Result<Box<dyn SlotProcessor>, String> {
+    pub fn activate(&mut self, sample_rate: f64) -> Result<Box<dyn Module>, String> {
         if self.instance.is_active() {
             self.instance.try_deactivate().map_err(|e| e.to_string())?;
         }
@@ -265,8 +265,8 @@ impl ClapProcessor {
     }
 }
 
-impl SlotProcessor for ClapProcessor {
-    fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+impl Module for ClapProcessor {
+    fn process(&mut self, _ctx: &ModuleCtx, left: &mut [f32], right: &mut [f32]) {
         if self.failed {
             return;
         }
@@ -331,7 +331,11 @@ impl SlotProcessor for ClapProcessor {
                 left[..n].copy_from_slice(&buf[..n]);
                 right[..n].copy_from_slice(&buf[MAX_FRAMES..MAX_FRAMES + n]);
             }
-            _ => {}
+            _ => return,
+        }
+        // Plugins are outside our control: never let NaN/inf through to the limiter.
+        for x in left[..n].iter_mut().chain(&mut right[..n]) {
+            *x = if x.is_finite() { x.clamp(-4.0, 4.0) } else { 0.0 };
         }
     }
 
@@ -364,7 +368,7 @@ mod tests {
         for block in 0..200 {
             let mut l: Vec<f32> = (0..n).map(|i| ((block * n + i) as f32 * 0.03).sin() * 0.5).collect();
             let mut r = l.clone();
-            proc.process(&mut l, &mut r);
+            proc.process(&ModuleCtx { dry: &[] }, &mut l, &mut r);
             assert!(l.iter().chain(&r).all(|x| x.is_finite()));
         }
         plugin.idle();
@@ -378,7 +382,7 @@ mod tests {
         // Re-activation (as after an audio device change) must work too.
         let mut proc = plugin.activate(44100.0).expect("re-activate");
         let (mut l, mut r) = (vec![0.1; 256], vec![0.1; 256]);
-        proc.process(&mut l, &mut r);
+        proc.process(&ModuleCtx { dry: &[] }, &mut l, &mut r);
         proc.stop();
         drop(proc);
         drop(plugin);

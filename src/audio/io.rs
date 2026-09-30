@@ -6,7 +6,8 @@
 //! through a resampler whose ratio is nudged to keep the ring's *minimum* fill just above a
 //! small safety margin. That absorbs rate mismatch and clock drift at the lowest delay.
 
-use super::engine::{Engine, SlotLink};
+use super::engine::{Engine, RackLink};
+use super::module::RackModule;
 use crate::dsp::filters::cubic;
 use crate::shared::Shared;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -207,7 +208,8 @@ macro_rules! dispatch_format {
 const MAIN: usize = 0;
 const MONITOR: usize = 1;
 
-pub fn start(settings: &AudioSettings, shared: Arc<Shared>, link: Option<SlotLink>, seed: u64) -> Result<Running, String> {
+/// `build` creates the rack's modules once the engine's sample rate (the microphone's) is known.
+pub fn start(settings: &AudioSettings, shared: Arc<Shared>, link: Option<RackLink>, build: impl FnOnce(f64) -> Vec<RackModule>) -> Result<Running, String> {
     let errors = Arc::new(Mutex::new(Vec::new()));
     let in_dev = find(settings.input.as_deref(), true)?;
     let out_dev = find(settings.output.as_deref(), false)?;
@@ -233,7 +235,7 @@ pub fn start(settings: &AudioSettings, shared: Arc<Shared>, link: Option<SlotLin
     };
 
     let input = InputState {
-        engine: Engine::new(in_rate as f32, shared.clone(), seed, link),
+        engine: Engine::new(in_rate as f32, shared.clone(), build(in_rate), link),
         shared: shared.clone(),
         in_block,
         main: main_tx,
@@ -255,7 +257,7 @@ pub fn start(settings: &AudioSettings, shared: Arc<Shared>, link: Option<SlotLin
 
     let name = |d: &Device| d.description().map(|x| x.name().to_string()).unwrap_or_default();
     let description = format!(
-        "{} ({} Hz, {} ch) → {} ({} Hz, {} ch)",
+        "{} ({} Hz, {} ch) ➡ {} ({} Hz, {} ch)",
         name(&in_dev),
         in_cfg.sample_rate,
         in_cfg.channels,
