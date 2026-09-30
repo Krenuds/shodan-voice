@@ -226,7 +226,6 @@ pub struct Settings {
     pub user_presets: BTreeMap<String, UserPreset>,
     /// `None` in files written before the rack existed; see [`Settings::rack_items`].
     pub rack: Option<Vec<RackItemSettings>>,
-    pub rack_open: bool,
     /// The two fixed plugin slots of older versions; only read, to migrate them into the rack.
     #[serde(skip_serializing)]
     pub slots: Vec<SlotSettings>,

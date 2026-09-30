@@ -1,35 +1,32 @@
-//! The rack: the GUI-thread side of the module chain, and the contents of the Rack window.
+//! The rack: the GUI-thread side of the module chain. Only the model; the patchbay and the
+//! inspector draw it and change it through [`Action`]s.
 
-use super::knob::Knob;
-use super::param_ui::param_knobs;
-use super::theme;
 use crate::audio::engine::{Command, MAX_MODULES};
 use crate::audio::module::{Module, ModuleId, ModuleShared, RackModule};
-use crate::lexicon;
 use crate::modules::{self, ModuleKind};
 use crate::params::Params;
 #[cfg(feature = "clap-host")]
-use crate::plugins::{LoadedPlugin, PluginInfo, scan};
+use crate::plugins::{LoadedPlugin, PluginInfo};
 #[cfg(feature = "clap-host")]
 use crate::presets::SlotSettings;
 use crate::presets::{CLAP_KIND, RackItemSettings, Values};
 use crate::shared::Shared;
-use crate::speech;
-use eframe::egui::{self, RichText};
+use eframe::egui;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 /// Assignable knobs shown for a CLAP plugin.
 #[cfg(feature = "clap-host")]
-const KNOBS: usize = 4;
+pub const KNOBS: usize = 4;
 
 #[cfg(feature = "clap-host")]
-struct ClapBody {
-    plugin: LoadedPlugin,
-    knobs: [Option<u32>; KNOBS],
+pub struct ClapBody {
+    pub plugin: LoadedPlugin,
+    /// Plugin parameter ids on the assignable knobs.
+    pub knobs: [Option<u32>; KNOBS],
 }
 
-enum Body {
+pub enum Body {
     Native(&'static ModuleKind),
     #[cfg(feature = "clap-host")]
     Clap(Box<ClapBody>),
@@ -37,22 +34,32 @@ enum Body {
     Missing(Box<RackItemSettings>),
 }
 
-struct Item {
-    id: ModuleId,
-    shared: Arc<ModuleShared>,
-    body: Body,
+pub struct Item {
+    pub id: ModuleId,
+    pub shared: Arc<ModuleShared>,
+    pub body: Body,
     /// The engine currently holds this item's audio half.
-    live: bool,
-    error: Option<String>,
+    pub live: bool,
+    pub error: Option<String>,
 }
 
 impl Item {
-    fn title(&self) -> String {
+    pub fn title(&self) -> String {
         match &self.body {
             Body::Native(kind) => kind.name.to_string(),
             #[cfg(feature = "clap-host")]
             Body::Clap(c) => c.plugin.name.clone(),
             Body::Missing(s) => s.clap.as_ref().and_then(|c| c.name.clone()).unwrap_or_else(|| s.kind.clone()),
+        }
+    }
+
+    /// The native kind's id, `"clap"`, or the saved kind of a missing module.
+    pub fn kind_id(&self) -> &str {
+        match &self.body {
+            Body::Native(kind) => kind.id,
+            #[cfg(feature = "clap-host")]
+            Body::Clap(_) => CLAP_KIND,
+            Body::Missing(s) => &s.kind,
         }
     }
 
@@ -112,12 +119,15 @@ pub struct Live<'a> {
     pub app: &'a Arc<Shared>,
 }
 
-enum Action {
-    Add(&'static ModuleKind),
+/// An edit of the chain. Positions are indices into [`Rack::items`]; `None` or past the end
+/// means the end of the chain.
+pub enum Action {
+    Add(&'static ModuleKind, Option<usize>),
     #[cfg(feature = "clap-host")]
-    AddClap(PluginInfo),
+    AddClap(PluginInfo, Option<usize>),
     Remove(ModuleId),
-    Move(ModuleId, isize),
+    /// Move a module so that it ends up at this index.
+    MoveTo(ModuleId, usize),
 }
 
 pub struct Rack {
@@ -128,12 +138,6 @@ pub struct Rack {
     /// Plugins waiting for the audio thread to hand their processor back before deactivating.
     #[cfg(feature = "clap-host")]
     pending: Vec<LoadedPlugin>,
-    #[cfg(feature = "clap-host")]
-    catalog: Option<Vec<PluginInfo>>,
-    #[cfg(feature = "clap-host")]
-    show_instruments: bool,
-    #[cfg(feature = "clap-host")]
-    filter: String,
 }
 
 impl Rack {
@@ -145,13 +149,29 @@ impl Rack {
             error: None,
             #[cfg(feature = "clap-host")]
             pending: Vec::new(),
-            #[cfg(feature = "clap-host")]
-            catalog: None,
-            #[cfg(feature = "clap-host")]
-            show_instruments: false,
-            #[cfg(feature = "clap-host")]
-            filter: String::new(),
         }
+    }
+
+    /// The modules in playing order.
+    pub fn items(&self) -> &[Item] {
+        &self.items
+    }
+
+    pub fn items_mut(&mut self) -> &mut [Item] {
+        &mut self.items
+    }
+
+    pub fn item(&self, id: ModuleId) -> Option<&Item> {
+        self.items.iter().find(|i| i.id == id)
+    }
+
+    pub fn item_mut(&mut self, id: ModuleId) -> Option<&mut Item> {
+        self.items.iter_mut().find(|i| i.id == id)
+    }
+
+    /// Why the last edit could not be done (e.g. the rack is full).
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
     }
 
     fn new_item(&mut self, body: Body, shared: Arc<ModuleShared>) -> Item {
@@ -258,11 +278,6 @@ impl Rack {
         self.items.iter().map(|i| &i.shared.params)
     }
 
-    /// The first module of a native kind, if the rack has one.
-    pub fn first(&self, kind: &ModuleKind) -> Option<&Arc<ModuleShared>> {
-        self.items.iter().find(|i| matches!(i.body, Body::Native(k) if k.id == kind.id)).map(|i| &i.shared)
-    }
-
     /// A stream is starting at `sample_rate`: build every module's audio half for the new engine.
     pub fn build(&mut self, sample_rate: f64, app: &Arc<Shared>) -> Vec<RackModule> {
         let seed = self.seed;
@@ -325,11 +340,14 @@ impl Rack {
         }
     }
 
-    fn add(&mut self, body: Body, shared: Arc<ModuleShared>, live: &mut Option<Live>) {
+    fn add(&mut self, body: Body, shared: Arc<ModuleShared>, at: Option<usize>, live: &mut Option<Live>) -> ModuleId {
         let mut item = self.new_item(body, shared);
+        let id = item.id;
         self.go_live(&mut item, live);
-        self.items.push(item);
+        let at = at.unwrap_or(usize::MAX).min(self.items.len());
+        self.items.insert(at, item);
         self.send_order(live);
+        id
     }
 
     fn remove(&mut self, id: ModuleId, live: &mut Option<Live>) {
@@ -356,106 +374,32 @@ impl Rack {
         }
     }
 
-    fn apply(&mut self, action: Action, live: &mut Option<Live>, _ctx: &egui::Context) {
+    /// Do an edit, on the running engine too if there is one. Returns the id of an added module.
+    pub fn apply(&mut self, action: Action, live: &mut Option<Live>, _ctx: &egui::Context) -> Option<ModuleId> {
         self.error = None;
         let full = self.items.len() >= MAX_MODULES;
         match action {
-            Action::Add(_) if full => self.error = Some(format!("The rack holds at most {MAX_MODULES} modules.")),
-            Action::Add(kind) => self.add(Body::Native(kind), ModuleShared::new(kind.defs), live),
+            Action::Add(..) if full => self.error = Some(format!("The rack holds at most {MAX_MODULES} modules.")),
+            Action::Add(kind, at) => return Some(self.add(Body::Native(kind), ModuleShared::new(kind.defs), at, live)),
             #[cfg(feature = "clap-host")]
-            Action::AddClap(_) if full => self.error = Some(format!("The rack holds at most {MAX_MODULES} modules.")),
+            Action::AddClap(..) if full => self.error = Some(format!("The rack holds at most {MAX_MODULES} modules.")),
             #[cfg(feature = "clap-host")]
-            Action::AddClap(info) => match LoadedPlugin::load(&info.bundle, &info.id, &info.name, _ctx.clone()) {
+            Action::AddClap(info, at) => match LoadedPlugin::load(&info.bundle, &info.id, &info.name, _ctx.clone()) {
                 Ok(plugin) => {
                     let knobs = std::array::from_fn(|k| plugin.params.get(k).map(|m| m.id));
-                    self.add(Body::Clap(Box::new(ClapBody { plugin, knobs })), ModuleShared::new(&[]), live);
+                    return Some(self.add(Body::Clap(Box::new(ClapBody { plugin, knobs })), ModuleShared::new(&[]), at, live));
                 }
                 Err(e) => self.error = Some(e),
             },
             Action::Remove(id) => self.remove(id, live),
-            Action::Move(id, by) => {
-                let Some(i) = self.items.iter().position(|item| item.id == id) else { return };
-                let j = i.saturating_add_signed(by).min(self.items.len() - 1);
-                self.items.swap(i, j);
+            Action::MoveTo(id, to) => {
+                let i = self.items.iter().position(|item| item.id == id)?;
+                let item = self.items.remove(i);
+                self.items.insert(to.min(self.items.len()), item);
                 self.send_order(live);
             }
         }
-    }
-
-    /// Draw the rack. Returns true if modules were added, removed or moved.
-    pub fn ui(&mut self, ui: &mut egui::Ui, mut live: Option<Live>) -> bool {
-        let mut action = None;
-        self.add_row(ui, &mut action);
-        if let Some(e) = &self.error {
-            ui.label(RichText::new(e).color(theme::DANGER).small());
-        }
-
-        let flow = |ui: &mut egui::Ui, text: &str| {
-            ui.label(RichText::new(text).monospace().size(12.0).color(theme::TEXT_DIM));
-        };
-        flow(ui, "MIC  ·  input gain");
-        let count = self.items.len();
-        let app = live.as_ref().map(|l| l.app.clone());
-        for (index, item) in self.items.iter_mut().enumerate() {
-            ui.push_id(item.id, |ui| strip(ui, item, index, count, app.as_deref(), &mut action));
-        }
-        if count == 0 {
-            ui.label(RichText::new("The rack is empty: your voice passes through unchanged.").color(theme::WARN));
-        }
-        flow(ui, "OUTPUT  ·  output gain, bypass, limiter");
-
-        let changed = action.is_some();
-        if let Some(action) = action {
-            self.apply(action, &mut live, ui.ctx());
-        }
-        changed
-    }
-
-    fn add_row(&mut self, ui: &mut egui::Ui, action: &mut Option<Action>) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Add");
-            for kind in &modules::NATIVE {
-                if ui.button(kind.name).clicked() {
-                    *action = Some(Action::Add(kind));
-                }
-            }
-            #[cfg(feature = "clap-host")]
-            self.plugin_picker(ui, action);
-        });
-    }
-
-    #[cfg(feature = "clap-host")]
-    fn plugin_picker(&mut self, ui: &mut egui::Ui, action: &mut Option<Action>) {
-        let Self { catalog, show_instruments, filter, .. } = self;
-        egui::ComboBox::from_id_salt("plugin_pick").width(170.0).selected_text("CLAP plugin…").height(420.0).show_ui(ui, |ui| {
-            if catalog.is_none() {
-                *catalog = Some(scan::scan());
-            }
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(filter).hint_text("filter…").desired_width(150.0));
-                ui.checkbox(show_instruments, "instruments");
-                if ui.small_button("rescan").clicked() {
-                    *catalog = Some(scan::scan());
-                }
-            });
-            let list = catalog.as_deref().unwrap_or_default();
-            if list.is_empty() {
-                ui.label(RichText::new("No CLAP plugins found.").color(theme::WARN));
-                ui.label("Install e.g. Airwindows Consolidated or Surge XT,\nthen press rescan. Searched:");
-                for p in scan::search_paths() {
-                    ui.label(RichText::new(p.display().to_string()).small().monospace());
-                }
-            }
-            let f = filter.to_lowercase();
-            for info in list {
-                if (info.is_instrument && !*show_instruments) || (!f.is_empty() && !info.name.to_lowercase().contains(&f) && !info.vendor.to_lowercase().contains(&f)) {
-                    continue;
-                }
-                if ui.selectable_label(false, format!("{}  ·  {}", info.name, info.vendor)).clicked() {
-                    *action = Some(Action::AddClap(info.clone()));
-                }
-            }
-        });
+        None
     }
 }
 
@@ -480,152 +424,13 @@ fn restore_plugin(s: &RackItemSettings, _ctx: &egui::Context) -> Result<Body, St
     Err(if s.kind == CLAP_KIND { "this build cannot host CLAP plugins".into() } else { format!("unknown module kind '{}'", s.kind) })
 }
 
-/// What the speech recogniser behind TitoBot is doing.
-fn speech_status(ui: &mut egui::Ui, app: &Shared) {
-    let s = &app.speech;
-    let (text, color) = match s.state.load(Ordering::Relaxed) {
-        speech::LOADING => ("Loading the speech model…".to_string(), theme::TEXT_DIM),
-        speech::LISTENING => match s.text() {
-            heard if heard.is_empty() => ("Listening".to_string(), theme::TEXT_DIM),
-            heard => (format!("Heard: {heard}  ·  pass {:.0} ms  ·  word out {:.0} ms after the voice", s.ms.get(), s.delay_ms.get()), theme::TEXT_DIM),
-        },
-        speech::FAILED => (format!("Not listening: {}", s.text()), theme::WARN),
-        _ => return,
-    };
-    ui.label(RichText::new(text).small().color(color));
-}
-
-/// Every word TitoBot knows, each with the other things people say that mean it. Read from the
-/// lexicon, so it cannot fall behind it.
-fn word_list(ui: &mut egui::Ui, index: usize) {
-    egui::CollapsingHeader::new(RichText::new(format!("Words ({})", lexicon::WORDS.len())).small()).id_salt(("words", index)).show(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            for word in lexicon::WORDS {
-                ui.label(RichText::new(word.text).monospace().color(theme::ACCENT));
-                if !word.also.is_empty() {
-                    ui.label(RichText::new(format!("({})", word.also.join(", "))).small().color(theme::TEXT_DIM));
-                }
-                ui.add_space(8.0);
-            }
-        });
-    });
-}
-
-/// One module: reorder/remove header, then On, Mix and the module's own knobs. `app` is there
-/// while audio is running.
-fn strip(ui: &mut egui::Ui, item: &mut Item, index: usize, count: usize, app: Option<&Shared>, action: &mut Option<Action>) {
-    let running = app.is_some();
-    let width = ui.available_width() - 20.0;
-    egui::Frame::new().fill(theme::CARD).corner_radius(egui::CornerRadius::same(6)).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
-        ui.set_width(width);
-        ui.horizontal(|ui| {
-            if ui.add_enabled(index > 0, egui::Button::new("⏶").small()).on_hover_text("Earlier in the chain").clicked() {
-                *action = Some(Action::Move(item.id, -1));
-            }
-            if ui.add_enabled(index + 1 < count, egui::Button::new("⏷").small()).on_hover_text("Later in the chain").clicked() {
-                *action = Some(Action::Move(item.id, 1));
-            }
-            ui.label(RichText::new(format!("{}  {}", index + 1, item.title().to_uppercase())).monospace().size(12.0).color(theme::ACCENT));
-            if running && !item.live {
-                ui.label(RichText::new("not running").small().color(theme::WARN));
-            }
-            #[cfg(feature = "clap-host")]
-            if let Body::Clap(c) = &mut item.body {
-                let p = &mut c.plugin;
-                if p.has_editor() && ui.small_button(if p.window.is_some() { "Close editor" } else { "Editor" }).clicked() {
-                    if p.window.is_some() {
-                        p.close_editor();
-                    } else if let Err(e) = p.open_editor() {
-                        item.error = Some(e);
-                    }
-                }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("🗙").on_hover_text("Remove from the rack").clicked() {
-                    *action = Some(Action::Remove(item.id));
-                }
-            });
-        });
-        if let Some(e) = &item.error {
-            ui.label(RichText::new(e).color(theme::DANGER).small());
-        }
-        if let (Body::Native(kind), Some(app)) = (&item.body, app)
-            && kind.id == modules::titobot::KIND.id
-        {
-            speech_status(ui, app);
-        }
-        if let Body::Native(kind) = &item.body
-            && kind.id == modules::titobot::KIND.id
-        {
-            word_list(ui, index);
-        }
-
-        ui.horizontal_wrapped(|ui| {
-            let sh = &item.shared;
-            let mut enabled = sh.enabled.load(Ordering::Relaxed);
-            if ui.checkbox(&mut enabled, "On").changed() {
-                sh.enabled.store(enabled, Ordering::Relaxed);
-            }
-            let mut mix = sh.mix.get();
-            if Knob::new(&mut mix, 0.0, 1.0, 1.0, "Blend").format(|v| format!("{:.0}%", v * 100.0)).help("Blend of this module's output with its input.").show(ui).changed() {
-                sh.mix.set(mix);
-            }
-            ui.separator();
-            match &mut item.body {
-                Body::Native(_) => param_knobs(ui, &sh.params, None),
-                #[cfg(feature = "clap-host")]
-                Body::Clap(c) => plugin_knobs(ui, c),
-                Body::Missing(_) => {
-                    ui.label(RichText::new("Not loaded. It stays in the saved rack until you remove it.").small().color(theme::TEXT_DIM));
-                }
-            }
-        });
-    });
-}
-
-#[cfg(feature = "clap-host")]
-fn plugin_knobs(ui: &mut egui::Ui, body: &mut ClapBody) {
-    let ClapBody { plugin, knobs } = body;
-    for k in 0..KNOBS {
-        ui.vertical(|ui| {
-            let meta = knobs[k].and_then(|id| plugin.params.iter().find(|m| m.id == id)).cloned();
-            let label = meta.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| "—".into());
-            let short: String = label.chars().take(10).collect();
-            match meta {
-                Some(m) => {
-                    let mut v = plugin.get_value(m.id).unwrap_or(m.default) as f32;
-                    let resp = Knob::new(&mut v, m.min as f32, m.max as f32, m.default as f32, &short)
-                        .format(|v| plugin.value_text(m.id, v as f64).unwrap_or_else(|| format!("{v:.2}")).chars().take(10).collect())
-                        .stepped(m.stepped)
-                        .help(&label)
-                        .show(ui);
-                    if resp.changed() {
-                        plugin.set_value(m.id, v as f64);
-                    }
-                }
-                None => {
-                    ui.add_space(80.0);
-                }
-            }
-            egui::ComboBox::from_id_salt(("knob_assign", k)).width(62.0).selected_text(RichText::new("assign").small()).height(360.0).show_ui(ui, |ui| {
-                for m in &plugin.params {
-                    let name = if m.module.is_empty() { m.name.clone() } else { format!("{} / {}", m.module, m.name) };
-                    if ui.selectable_label(knobs[k] == Some(m.id), name).clicked() {
-                        knobs[k] = Some(m.id);
-                    }
-                }
-            });
-        });
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::audio::engine::{Engine, RackLink};
     use crate::presets::Settings;
 
-    /// Drive the rack the way the Rack window does, against a real engine.
+    /// Drive the rack the way the patchbay does, against a real engine.
     #[test]
     fn rack_edits_reach_the_running_engine() {
         let ctx = egui::Context::default();
@@ -649,12 +454,17 @@ mod tests {
 
         let mut edit = |rack: &mut Rack, action| rack.apply(action, &mut Some(Live { sr: 48000.0, tx: &mut tx, app: &app }), &ctx);
         // A second Lo-fi, moved to the front of the chain.
-        edit(&mut rack, Action::Add(modules::kind("lofi").unwrap()));
-        edit(&mut rack, Action::Move(4, -1));
-        edit(&mut rack, Action::Move(4, -1));
-        edit(&mut rack, Action::Move(4, -1));
+        edit(&mut rack, Action::Add(modules::kind("lofi").unwrap(), None));
+        edit(&mut rack, Action::MoveTo(4, 0));
         assert_eq!(ids(&rack), [4, 1, 2, 3]);
         assert_eq!(run(&mut engine), [4, 1, 2, 3]);
+        // Inserted in the middle, then dragged past the end.
+        assert_eq!(edit(&mut rack, Action::Add(modules::kind("metal").unwrap(), Some(2))), Some(5));
+        assert_eq!(ids(&rack), [4, 1, 5, 2, 3]);
+        edit(&mut rack, Action::MoveTo(5, 99));
+        assert_eq!(run(&mut engine), [4, 1, 2, 3, 5]);
+        edit(&mut rack, Action::Remove(5));
+        rack.idle(Some(&mut garbage_rx));
 
         edit(&mut rack, Action::Remove(1));
         assert_eq!(run(&mut engine), [4, 2, 3]);
@@ -675,8 +485,8 @@ mod tests {
         let mut preset = Settings::default().rack_items();
         preset[2].values.0.insert("lofi_bits".into(), 7.0);
         rack.load(&preset, Some(Live { sr: 48000.0, tx: &mut tx, app: &app }), &ctx);
-        assert_eq!(ids(&rack), [5, 2, 4]);
-        assert_eq!(run(&mut engine), [5, 2, 4]);
+        assert_eq!(ids(&rack), [6, 2, 4]);
+        assert_eq!(run(&mut engine), [6, 2, 4]);
         assert!(rack.items.iter().all(|i| i.live));
         assert_eq!(rack.items[2].shared.params.get_index(1), 7.0);
         assert_eq!(rack.save(), preset);

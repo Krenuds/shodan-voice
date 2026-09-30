@@ -52,21 +52,24 @@ pub struct Meters {
 const WORD_SLOTS: usize = 64;
 
 /// Recognised words (indices into `lexicon::WORDS`) on their way to the modules that speak them.
-/// One writer at a time, any number of readers; a reader that falls a full lap behind loses the
-/// oldest words.
+/// Writers (the recogniser, a click in the GUI; never the audio thread) take turns; any number of
+/// readers. A reader that falls a full lap behind loses the oldest words.
 pub struct WordBus {
     slots: [AtomicU32; WORD_SLOTS],
     head: AtomicU32,
+    writing: Mutex<()>,
 }
 
 impl Default for WordBus {
     fn default() -> Self {
-        Self { slots: std::array::from_fn(|_| AtomicU32::new(0)), head: AtomicU32::new(0) }
+        Self { slots: std::array::from_fn(|_| AtomicU32::new(0)), head: AtomicU32::new(0), writing: Mutex::new(()) }
     }
 }
 
 impl WordBus {
+    /// Not for the audio thread: it takes a lock.
     pub fn push(&self, word: u32) {
+        let _turn = self.writing.lock().unwrap_or_else(|e| e.into_inner());
         let head = self.head.load(Ordering::Relaxed);
         self.slots[head as usize % WORD_SLOTS].store(word, Ordering::Relaxed);
         self.head.store(head.wrapping_add(1), Ordering::Release);

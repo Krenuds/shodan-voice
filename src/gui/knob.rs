@@ -1,4 +1,5 @@
 //! Rotary knob: drag up/down to turn (Shift = fine), scroll to nudge, double-click to reset.
+//! Drawn like the K.O. II volume knob: a white cap with a dark notch, the value arc in orange.
 
 use super::theme;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Response, Sense, Shape, Stroke, Ui, Vec2};
@@ -6,7 +7,7 @@ use std::f32::consts::PI;
 
 const START: f32 = PI * 0.75;
 const SWEEP: f32 = PI * 1.5;
-pub const KNOB_WIDTH: f32 = 68.0;
+pub const KNOB_WIDTH: f32 = 72.0;
 
 pub struct Knob<'a> {
     value: &'a mut f32,
@@ -23,7 +24,7 @@ pub struct Knob<'a> {
 
 impl<'a> Knob<'a> {
     pub fn new(value: &'a mut f32, min: f32, max: f32, default: f32, label: &'a str) -> Self {
-        Self { value, min, max, default, label, format: Box::new(|v| format!("{v:.2}")), stepped: false, bipolar: min < 0.0 && max > 0.0, help: "", diameter: 46.0 }
+        Self { value, min, max, default, label, format: Box::new(|v| format!("{v:.2}")), stepped: false, bipolar: min < 0.0 && max > 0.0, help: "", diameter: 44.0 }
     }
 
     /// How the value is displayed under the knob.
@@ -43,7 +44,7 @@ impl<'a> Knob<'a> {
     }
 
     pub fn show(mut self, ui: &mut Ui) -> Response {
-        let (rect, mut response) = ui.allocate_exact_size(Vec2::new(KNOB_WIDTH, self.diameter + 34.0), Sense::click_and_drag());
+        let (rect, mut response) = ui.allocate_exact_size(Vec2::new(KNOB_WIDTH, self.diameter + 38.0), Sense::click_and_drag());
         let range = self.max - self.min;
         let old = *self.value;
 
@@ -71,9 +72,9 @@ impl<'a> Knob<'a> {
             response.mark_changed();
         }
 
-        let painter = ui.painter_at(rect.expand(2.0));
+        let painter = ui.painter_at(rect.expand(4.0));
         let r = self.diameter * 0.5;
-        let center = Pos2::new(rect.center().x, rect.top() + 2.0 + r);
+        let center = Pos2::new(rect.center().x, rect.top() + 3.0 + r);
         let norm = if range > 0.0 { (*self.value - self.min) / range } else { 0.0 };
         let hot = response.hovered() || response.dragged();
 
@@ -87,21 +88,42 @@ impl<'a> Knob<'a> {
                 .collect()
         };
 
-        painter.circle_filled(center, r - 5.0, theme::KNOB_BODY);
-        painter.add(Shape::line(arc(START, START + SWEEP, r - 1.5), Stroke::new(3.0, theme::KNOB_TRACK)));
+        // Value arc: a printed track, orange where the value is.
+        let track_r = r - 1.5;
+        painter.add(Shape::line(arc(START, START + SWEEP, track_r), Stroke::new(3.0, theme::KNOB_TRACK)));
         let zero = if self.bipolar { (0.0 - self.min) / range } else { 0.0 };
         let (a0, a1) = (START + SWEEP * zero, START + SWEEP * norm);
         let accent = if hot { theme::ACCENT_HOT } else { theme::ACCENT };
         if (a1 - a0).abs() > 0.01 {
-            painter.add(Shape::line(arc(a0.min(a1), a0.max(a1), r - 1.5), Stroke::new(3.0, accent)));
+            painter.add(Shape::line(arc(a0.min(a1), a0.max(a1), track_r), Stroke::new(3.0, accent)));
         }
-        let tip = center + Vec2::angled(a1) * (r - 8.0);
-        painter.line_segment([center + Vec2::angled(a1) * 4.0, tip], Stroke::new(2.5, accent));
+        // End ticks printed on the chassis.
+        for a in [START, START + SWEEP] {
+            painter.line_segment([center + Vec2::angled(a) * (r + 1.5), center + Vec2::angled(a) * (r + 4.0)], Stroke::new(1.0, theme::INK_DIM));
+        }
 
-        painter.text(Pos2::new(center.x, rect.bottom() - 20.0), Align2::CENTER_CENTER, self.label, FontId::proportional(12.0), theme::TEXT);
-        let value_color = if hot { theme::ACCENT_HOT } else { theme::TEXT_DIM };
+        // The cap: a white dome sitting in a shadow ring, with a dark pointer notch.
+        let cap_r = r - 6.0;
+        painter.circle_filled(center + Vec2::new(0.0, 1.5), cap_r + 1.5, Color32::from_black_alpha(45));
+        painter.circle_filled(center, cap_r + 0.5, Color32::from_rgb(0xC4, 0xC4, 0xBF));
+        painter.circle_filled(center, cap_r, theme::KNOB_BODY);
+        painter.circle_filled(center - Vec2::new(0.0, cap_r * 0.18), cap_r * 0.72, Color32::from_white_alpha(if hot { 255 } else { 150 }));
+        let dir = Vec2::angled(a1);
+        painter.line_segment([center + dir * cap_r * 0.3, center + dir * (cap_r - 2.5)], Stroke::new(3.0, theme::INK));
+
+        // Label printed underneath in small caps, shrunk to fit; the value in monospace ink.
+        let label = self.label.to_uppercase();
+        let mut size = 9.5;
+        let mut galley = painter.layout_no_wrap(label.clone(), FontId::monospace(size), theme::INK_DIM);
+        if galley.size().x > KNOB_WIDTH - 2.0 {
+            size = (size * (KNOB_WIDTH - 2.0) / galley.size().x).max(7.0);
+            galley = painter.layout_no_wrap(label, FontId::monospace(size), theme::INK_DIM);
+        }
+        let label_pos = Pos2::new(center.x - galley.size().x * 0.5, rect.bottom() - 28.0);
+        painter.galley(label_pos, galley, theme::INK_DIM);
+        let value_color = if hot { theme::ORANGE } else { theme::INK };
         let text = (self.format)(*self.value);
-        painter.text(Pos2::new(center.x, rect.bottom() - 6.0), Align2::CENTER_CENTER, text, FontId::monospace(11.0), value_color);
+        painter.text(Pos2::new(center.x, rect.bottom() - 7.0), Align2::CENTER_CENTER, text, FontId::monospace(11.0), value_color);
 
         if hot {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
@@ -114,19 +136,11 @@ impl<'a> Knob<'a> {
     }
 }
 
-/// Horizontal level meter with a peak colour change near clipping.
+/// Horizontal level meter: a printed label and a pixel meter, -60..0 dBFS.
+#[allow(dead_code)] // kept for panels that want a labelled meter
 pub fn meter(ui: &mut Ui, label: &str, level: f32, width: f32) {
     ui.horizontal(|ui| {
-        ui.add_sized([28.0, 14.0], egui::Label::new(egui::RichText::new(label).small().color(theme::TEXT_DIM)));
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 10.0), Sense::hover());
-        let p = ui.painter();
-        p.rect_filled(rect, 2.0, theme::KNOB_TRACK);
-        // -60..0 dBFS
-        let db = 20.0 * level.max(1e-6).log10();
-        let frac = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
-        let mut fill = rect;
-        fill.set_width(rect.width() * frac);
-        let color = if db > -1.0 { Color32::from_rgb(255, 80, 60) } else if db > -9.0 { Color32::from_rgb(230, 200, 60) } else { theme::ACCENT };
-        p.rect_filled(fill, 2.0, color);
+        ui.add_sized([28.0, 14.0], egui::Label::new(theme::silk(label)));
+        super::widgets::pixel_meter(ui, level, Vec2::new(width, 12.0), false);
     });
 }

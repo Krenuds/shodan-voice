@@ -38,11 +38,13 @@ pub struct ModuleShared {
     pub enabled: AtomicBool,
     /// Blend of the module's output with its input.
     pub mix: AtomicF32,
+    /// Peak of the chain right after this module (0 while it is skipped), for the GUI to `take`.
+    pub out_peak: AtomicF32,
 }
 
 impl ModuleShared {
     pub fn new(defs: &'static [ParamDef]) -> Arc<Self> {
-        Arc::new(Self { params: Params::new(defs), enabled: AtomicBool::new(true), mix: AtomicF32::new(1.0) })
+        Arc::new(Self { params: Params::new(defs), enabled: AtomicBool::new(true), mix: AtomicF32::new(1.0), out_peak: AtomicF32::new(0.0) })
     }
 }
 

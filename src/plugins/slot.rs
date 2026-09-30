@@ -11,6 +11,7 @@ use clack_host::prelude::*;
 use std::ffi::CString;
 use std::path::Path;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 pub const MAX_FRAMES: usize = crate::audio::module::MAX_BLOCK;
 
@@ -67,6 +68,9 @@ pub struct LoadedPlugin {
     param_tx: Option<rtrb::Producer<(u32, f64)>>,
     /// Values set before the plugin was activated; sent with the first process call.
     queued: Vec<(u32, f64)>,
+    /// Values just set from the GUI, which the plugin only reports back once the audio thread has
+    /// passed them on (never, while it isn't running). Shown instead, so a drag doesn't snap back.
+    recent: Vec<(u32, f64, Instant)>,
     inputs: PortLayout,
     outputs: PortLayout,
     pub window: Option<PluginWindow>,
@@ -95,6 +99,7 @@ impl LoadedPlugin {
             params,
             param_tx: None,
             queued: Vec::new(),
+            recent: Vec::new(),
             inputs,
             outputs,
             window: None,
@@ -125,6 +130,9 @@ impl LoadedPlugin {
     }
 
     pub fn get_value(&mut self, id: u32) -> Option<f64> {
+        if let Some(&(_, v, _)) = self.recent.iter().find(|r| r.0 == id) {
+            return Some(v);
+        }
         let params = self.instance.access_handler(|h| h.params.get())?;
         params.get_value(&self.instance.plugin_handle(), ClapId::new(id))
     }
@@ -138,16 +146,25 @@ impl LoadedPlugin {
     }
 
     pub fn set_value(&mut self, id: u32, value: f64) {
+        self.recent.retain(|r| r.0 != id);
+        self.recent.push((id, value, Instant::now()));
         match self.param_tx.as_mut() {
             Some(tx) => {
                 let _ = tx.push((id, value));
             }
-            None => self.queued.push((id, value)),
+            None => {
+                self.queued.retain(|q| q.0 != id);
+                self.queued.push((id, value));
+            }
         }
     }
 
     /// Service plugin requests; call once per GUI frame.
     pub fn idle(&mut self) {
+        // While running, the plugin has the value by now; stopped, only `queued` has it.
+        if self.param_tx.is_some() {
+            self.recent.retain(|r| r.2.elapsed() < Duration::from_millis(250));
+        }
         let (callback, closed, resize) = self.instance.access_shared_handler(|s| {
             (
                 s.callback_requested.swap(false, Ordering::AcqRel),

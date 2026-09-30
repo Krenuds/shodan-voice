@@ -145,11 +145,14 @@ impl Engine {
             let m0 = e.mix;
             e.mix = target;
             if m0 < 1e-4 && target < 1e-4 {
+                // Off: the chain passes through unchanged, and its cable still carries it.
+                e.m.shared.out_peak.max(peak(out_l, out_r));
                 continue;
             }
             latency += e.m.module.latency_ms();
             if m0 >= 1.0 && target >= 1.0 {
                 e.m.module.process(&ctx, out_l, out_r);
+                e.m.shared.out_peak.max(peak(out_l, out_r));
                 continue;
             }
             let (wl, wr) = (&mut self.wet_l[..n], &mut self.wet_r[..n]);
@@ -162,6 +165,7 @@ impl Engine {
                 out_l[k] += (wl[k] - out_l[k]) * m;
                 out_r[k] += (wr[k] - out_r[k]) * m;
             }
+            e.m.shared.out_peak.max(peak(out_l, out_r));
         }
 
         // Output stage: gain, bypass crossfade, limiter. Never a dry/wet blend.
@@ -187,6 +191,10 @@ impl Engine {
         m.output_peak.max(out_peak);
         m.dsp_ms.set(latency);
     }
+}
+
+fn peak(l: &[f32], r: &[f32]) -> f32 {
+    l.iter().chain(r).fold(0.0, |p, x| p.max(x.abs()))
 }
 
 /// Set flush-to-zero / denormals-are-zero for this thread so decaying filters stay fast.
