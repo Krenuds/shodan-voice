@@ -17,13 +17,23 @@ const HANG_FRAMES: usize = 35;
 /// Quiet kept at the end of an utterance.
 const TAIL_FRAMES: usize = 15;
 /// Utterances with fewer loud frames are clicks, not speech.
-const MIN_LOUD_FRAMES: usize = 8;
+pub const MIN_LOUD_FRAMES: usize = 8;
+/// Length of one frame, ms.
+pub const FRAME_MS: f32 = 1000.0 * FRAME as f32 / RATE as f32;
 const MAX_LEN: usize = 6 * RATE;
 
 pub struct Utterance {
     pub audio: Vec<f32>,
-    /// How many input samples had been pushed when the utterance was complete.
-    pub end: u64,
+    /// Frames above the gate, and the quiet frames after the last of them.
+    pub loud: usize,
+    pub quiet: usize,
+}
+
+/// An utterance that is still being spoken.
+pub struct Partial<'a> {
+    pub audio: &'a [f32],
+    pub loud: usize,
+    pub quiet: usize,
 }
 
 pub struct Segmenter {
@@ -32,7 +42,6 @@ pub struct Segmenter {
     frac: f64,
     history: [f32; 4],
     lowpass: [Biquad; 2],
-    consumed: u64,
     frame: Vec<f32>,
     pre_roll: VecDeque<f32>,
     speech: Vec<f32>,
@@ -52,7 +61,6 @@ impl Segmenter {
             frac: 0.0,
             history: [0.0; 4],
             lowpass,
-            consumed: 0,
             frame: Vec::with_capacity(FRAME),
             pre_roll: VecDeque::with_capacity(PRE_ROLL + FRAME),
             speech: Vec::new(),
@@ -66,7 +74,6 @@ impl Segmenter {
     pub fn push(&mut self, input: &[f32], gate_db: f32, mut emit: impl FnMut(Utterance)) {
         let gate = db_to_gain(gate_db);
         for &x in input {
-            self.consumed += 1;
             let x = self.lowpass[0].process(x);
             let x = self.lowpass[1].process(x);
             self.history.rotate_left(1);
@@ -81,6 +88,11 @@ impl Segmenter {
             }
             self.frac -= 1.0;
         }
+    }
+
+    /// The utterance in progress, if someone is speaking.
+    pub fn partial(&self) -> Option<Partial<'_>> {
+        self.speaking.then(|| Partial { audio: &self.speech, loud: self.loud, quiet: self.quiet })
     }
 
     /// The input is over: emit the utterance in progress, if any.
@@ -123,7 +135,7 @@ impl Segmenter {
         let mut audio = std::mem::take(&mut self.speech);
         if self.loud >= MIN_LOUD_FRAMES {
             audio.truncate(audio.len() - self.quiet.saturating_sub(TAIL_FRAMES) * FRAME);
-            emit(Utterance { audio, end: self.consumed });
+            emit(Utterance { audio, loud: self.loud, quiet: self.quiet });
         }
     }
 }

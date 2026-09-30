@@ -4,12 +4,12 @@ use crate::audio::engine::Engine;
 use crate::lexicon;
 use crate::modules::{self, titobot};
 use crate::presets;
-use crate::shared::{Shared, WordBus};
-use crate::speech::{self, segment, segment::Segmenter};
+use crate::shared::Shared;
+use crate::speech::{Heard, Hearing};
 use std::sync::Arc;
 
-/// With `--hear`, how long after an utterance ends its words arrive: a typical recognition time
-/// on the GPU, fixed so renders stay reproducible.
+/// With `--hear`, how long after the audio that settled a word that word arrives: a typical
+/// recognition time on the GPU, fixed so renders stay reproducible.
 const HEAR_DELAY_S: f32 = 0.05;
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -86,30 +86,26 @@ pub fn run(args: &[String]) -> Result<(), String> {
             println!("Not in the lexicon (silent): {}", unknown.join(" "));
         }
     }
-    // What a recogniser hears in the input, each utterance due when a live one would deliver it.
+    // What the live listener would hear in the input, each word due when it would deliver it.
     let mut heard = Vec::new();
     if hear {
         let gate = rack.iter().find(|i| i.kind.id == titobot::KIND.id).map_or(-40.0, |i| i.shared.params.get(titobot::P::TitoGate));
-        let mut recognizer = speech::Recognizer::new()?;
-        let mut segmenter = Segmenter::new(sr);
-        let mut utterances = Vec::new();
+        let mut hearing = Hearing::new(sr)?;
+        let mut now = 0;
+        let mut report = |now: usize, h: Heard| match h {
+            Heard::Word { word, after_ms } => {
+                let due = now + (HEAR_DELAY_S * sr) as usize;
+                println!("{:6.2} s  {:<8} {after_ms:4.0} ms after the voice", due as f32 / sr, lexicon::WORDS[word as usize].text);
+                heard.push((due, word));
+            }
+            Heard::Text(_) => {}
+            Heard::Utterance(text) => println!("{:6.2} s  end of \"{text}\"", now as f32 / sr),
+        };
         for chunk in mono.chunks(512) {
-            segmenter.push(chunk, gate, |u| utterances.push(u));
+            now += chunk.len();
+            hearing.push(chunk, gate, |h| report(now, h))?;
         }
-        segmenter.finish(|u| utterances.push(u));
-        for u in utterances {
-            let started = std::time::Instant::now();
-            let text = recognizer.transcribe(&u.audio)?;
-            let unknown = lexicon::say(&text, &WordBus::default());
-            println!(
-                "{:6.2} s  \"{text}\"  ({:.1} s of speech, recognised in {:.0} ms){}",
-                u.end as f32 / sr,
-                u.audio.len() as f32 / segment::RATE as f32,
-                started.elapsed().as_secs_f32() * 1000.0,
-                if unknown.is_empty() { String::new() } else { format!("  not in the lexicon: {}", unknown.join(" ")) }
-            );
-            heard.push((u.end as usize + (HEAR_DELAY_S * sr) as usize, text));
-        }
+        hearing.finish(|h| report(now, h))?;
     }
     let mut heard = heard.into_iter().peekable();
 
@@ -117,8 +113,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     for (i, chunk) in mono.chunks(512).enumerate() {
         let s = i * 512;
         let e = s + chunk.len();
-        while let Some((_, text)) = heard.next_if(|(due, _)| *due <= s) {
-            lexicon::say(&text, &shared.words);
+        while let Some((_, word)) = heard.next_if(|(due, _)| *due <= s) {
+            shared.words.push(word);
         }
         engine.process(chunk, &mut l[s..e], &mut r[s..e]);
     }

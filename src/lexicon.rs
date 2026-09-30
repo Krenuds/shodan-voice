@@ -39,9 +39,14 @@ pub static WORDS: &[Word] = &[
     Word { text: "bad", notes: &[n(6.0, 1.0), n(3.0, 1.0), g(0.0, -5.0, 3.0)] },
 ];
 
+/// A token of a transcript without the punctuation around it.
+pub fn bare(token: &str) -> &str {
+    token.trim_matches(|c: char| !c.is_alphanumeric())
+}
+
 /// Index into [`WORDS`] of a spoken word, ignoring case and punctuation.
 pub fn lookup(text: &str) -> Option<u32> {
-    let text = text.trim_matches(|c: char| !c.is_alphanumeric());
+    let text = bare(text);
     WORDS.iter().position(|w| w.text.eq_ignore_ascii_case(text)).map(|i| i as u32)
 }
 

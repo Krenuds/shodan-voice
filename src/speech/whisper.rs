@@ -38,7 +38,10 @@ pub struct Recognizer {
 impl Recognizer {
     /// Loads the model if this is the first recogniser, which takes a moment.
     pub fn new() -> Result<Self, String> {
-        Ok(Self { state: context()?.create_state().map_err(|e| e.to_string())?, padded: Vec::new() })
+        let mut recognizer = Self { state: context()?.create_state().map_err(|e| e.to_string())?, padded: Vec::new() };
+        // The first pass is several times slower than the rest; spend it on silence.
+        recognizer.transcribe(&[])?;
+        Ok(recognizer)
     }
 
     pub fn transcribe(&mut self, audio: &[f32]) -> Result<String, String> {

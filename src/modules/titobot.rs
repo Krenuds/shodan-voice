@@ -41,6 +41,7 @@ pub const KIND: ModuleKind = ModuleKind {
             pos: 0.0,
             rest: 0.0,
             phase: 0.0,
+            hurry: 1.0,
         })
     },
 };
@@ -48,7 +49,11 @@ pub const KIND: ModuleKind = ModuleKind {
 /// Words that can wait their turn; more than this are dropped.
 const QUEUE: usize = 32;
 /// Silence between two words, in beats.
-const WORD_GAP: f32 = 2.0;
+const WORD_GAP: f32 = 1.0;
+/// A word with others waiting behind it is played this much faster per waiting word, up to
+/// `MAX_HURRY` times, so the robot catches up with the speaker.
+const HURRY: f32 = 0.5;
+const MAX_HURRY: f32 = 2.0;
 const ATTACK_S: f32 = 0.004;
 const RELEASE_S: f32 = 0.012;
 
@@ -71,6 +76,8 @@ struct TitoBot {
     /// Beats of silence left before the next word may start.
     rest: f32,
     phase: f32,
+    /// Speed of the word being played, 1 = at the tempo.
+    hurry: f32,
 }
 
 impl TitoBot {
@@ -111,18 +118,20 @@ impl Module for TitoBot {
             let beat_s = self.s.get(P::TitoTempo) * 0.001;
             let tone = self.s.get(P::TitoTone);
             let level = self.s.get(P::TitoLevel);
-            let beats_per_sample = 1.0 / (beat_s * self.sr);
 
             for i in s0..s1 {
                 if self.word.is_none() {
                     if self.rest > 0.0 {
-                        self.rest -= beats_per_sample;
+                        self.rest -= self.hurry / (beat_s * self.sr);
                     } else {
                         self.word = self.next_word();
                         self.note = 0;
                         self.pos = 0.0;
+                        self.hurry = (1.0 + HURRY * self.queue_len as f32).min(MAX_HURRY);
                     }
                 }
+                let beat_s = beat_s / self.hurry;
+                let beats_per_sample = 1.0 / (beat_s * self.sr);
                 let mut y = 0.0;
                 if let Some(word) = self.word {
                     let note = &word.notes[self.note];
@@ -191,8 +200,8 @@ mod tests {
         let peaks = speak("yes no");
         println!("{peaks:.2?}");
         assert!(peaks[0] > 0.2, "nothing played");
-        // yes (3 beats) + gap (2) + no (3) at 110 ms is under a second.
-        assert!(peaks[12..].iter().all(|&p| p == 0.0), "still sounding after the words");
+        // yes (3 beats, hurried by the waiting no) + gap (1) + no (3) at 110 ms.
+        assert!(peaks[8..].iter().all(|&p| p == 0.0), "still sounding after the words");
     }
 
     #[test]

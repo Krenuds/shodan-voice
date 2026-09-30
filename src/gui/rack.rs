@@ -404,7 +404,7 @@ fn speech_status(ui: &mut egui::Ui, app: &Shared) {
         speech::LOADING => ("Loading the speech model…".to_string(), theme::TEXT_DIM),
         speech::LISTENING => match s.text() {
             heard if heard.is_empty() => ("Listening".to_string(), theme::TEXT_DIM),
-            heard => (format!("Heard: {heard}  ·  {:.0} ms", s.ms.get()), theme::TEXT_DIM),
+            heard => (format!("Heard: {heard}  ·  pass {:.0} ms  ·  word out {:.0} ms after the voice", s.ms.get(), s.delay_ms.get()), theme::TEXT_DIM),
         },
         speech::FAILED => (format!("Not listening: {}", s.text()), theme::WARN),
         _ => return,

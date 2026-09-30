@@ -99,8 +99,11 @@ pub struct Speech {
     pub enabled: AtomicBool,
     /// One of the `speech::OFF`.. constants.
     pub state: AtomicU32,
-    /// How long the last utterance took to recognise, ms.
+    /// How long the last pass of the recogniser took, ms.
     pub ms: AtomicF32,
+    /// How long after the voice went quiet the last word was sent to the robot, ms. About the
+    /// pass time for a word sent while still talking.
+    pub delay_ms: AtomicF32,
     /// The last thing heard, or why the recogniser failed.
     text: Mutex<String>,
 }
