@@ -144,7 +144,9 @@ impl Module for TitoBot {
                     let since = self.pos * beat_s;
                     let left_s = (note.beats - self.pos) * beat_s;
                     let env = (since / ATTACK_S).min(left_s / RELEASE_S).clamp(0.0, 1.0);
-                    y = voice * env * level;
+                    if !note.rest {
+                        y = voice * env * level;
+                    }
 
                     self.pos += beats_per_sample;
                     if self.pos >= note.beats {
@@ -206,6 +208,6 @@ mod tests {
 
     #[test]
     fn unknown_words_and_the_voice_are_silent() {
-        assert!(speak("maybe later").iter().all(|&p| p == 0.0));
+        assert!(speak("cable later").iter().all(|&p| p == 0.0));
     }
 }

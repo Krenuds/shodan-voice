@@ -152,7 +152,7 @@ impl Stream {
         self.pass_ms = started.elapsed().as_secs_f32() * 1000.0;
         let after_ms = quiet as f32 * segment::FRAME_MS + self.pass_ms;
 
-        for word in settled_words(&text, &self.text, all).skip(self.said) {
+        for word in settled_words(&text, &self.text, all).into_iter().skip(self.said) {
             self.said += 1;
             out(Heard::Word { word, after_ms });
         }
@@ -170,11 +170,15 @@ impl Stream {
 /// The words of `text` the robot knows and that will not change any more. The last word may
 /// still be half said, unless `before`, the pass before this one, had it in the same place or
 /// `all` says the voice has stopped. Words the robot does not know are silent, so they are
-/// skipped and stay free to change.
-fn settled_words<'a>(text: &'a str, before: &'a str, all: bool) -> impl Iterator<Item = u32> + 'a {
+/// skipped and stay free to change. A phrase is settled when its last word is. A lone "you" is
+/// what the recogniser makes of a breath, so it is never spoken.
+fn settled_words(text: &str, before: &str, all: bool) -> Vec<u32> {
+    if lexicon::is_noise(text) {
+        return Vec::new();
+    }
     let count = text.split_whitespace().count();
-    let same = |i: usize, token: &str| before.split_whitespace().nth(i).is_some_and(|b| lexicon::bare(b).eq_ignore_ascii_case(lexicon::bare(token)));
-    text.split_whitespace().enumerate().take_while(move |&(i, token)| all || i + 1 < count || same(i, token)).filter_map(|(_, token)| lexicon::lookup(token))
+    let same = |i: usize| before.split_whitespace().nth(i).zip(text.split_whitespace().nth(i)).is_some_and(|(b, t)| lexicon::same(b, t));
+    lexicon::spans(text).iter().take_while(|s| all || s.last + 1 < count || same(s.last)).filter_map(|s| s.word).collect()
 }
 
 /// Start a thread that listens to mono audio at `sr` pushed into the returned ring, and says
@@ -240,7 +244,7 @@ fn log_transcript(text: &str) {
     if text.is_empty() {
         return;
     }
-    let unknown: Vec<&str> = text.split_whitespace().filter(|t| lexicon::lookup(t).is_none()).collect();
+    let unknown: Vec<&str> = lexicon::spans(text).iter().filter(|s| s.word.is_none()).map(|s| s.token).collect();
     let Some(dir) = crate::presets::config_dir() else { return };
     let time = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("transcripts.tsv")) {
@@ -253,7 +257,7 @@ mod tests {
     use super::*;
 
     fn settled(text: &str, before: &str, all: bool) -> Vec<&'static str> {
-        settled_words(text, before, all).map(|w| lexicon::WORDS[w as usize].text).collect()
+        settled_words(text, before, all).into_iter().map(|w| lexicon::WORDS[w as usize].text).collect()
     }
 
     #[test]
@@ -269,6 +273,23 @@ mod tests {
     fn a_word_is_settled_once_another_follows() {
         assert_eq!(settled("Yes, that is good", "Yes", false), ["yes"]);
         assert_eq!(settled("Yes, that is good.", "Yes, that is good", false), ["yes", "good"]);
-        assert_eq!(settled("Maybe bad no", "", false), ["bad"]);
+        assert_eq!(settled("Cable bad no", "", false), ["bad"]);
+    }
+
+    #[test]
+    fn a_phrase_is_one_word_however_it_arrives() {
+        assert_eq!(settled("Thank", "Thank", false), ["thanks"]);
+        // Already spoken after the pass before, and counted, so holding it back here is harmless.
+        assert_eq!(settled("Thank you", "Thank", false), [""; 0]);
+        assert_eq!(settled("Thank you.", "Thank you", false), ["thanks"]);
+        assert_eq!(settled("I don't", "I", false), ["me"]);
+        assert_eq!(settled("I don't know", "I don't", false), ["me"]);
+        assert_eq!(settled("I don't know.", "I don't", true), ["me", "don't know"]);
+    }
+
+    #[test]
+    fn a_lone_you_is_a_breath() {
+        assert_eq!(settled("You.", "You", true), [""; 0]);
+        assert_eq!(settled("You go", "You", true), ["you", "go"]);
     }
 }

@@ -5,6 +5,7 @@ use super::param_ui::param_knobs;
 use super::theme;
 use crate::audio::engine::{Command, MAX_MODULES};
 use crate::audio::module::{Module, ModuleId, ModuleShared, RackModule};
+use crate::lexicon;
 use crate::modules::{self, ModuleKind};
 use crate::params::Params;
 #[cfg(feature = "clap-host")]
@@ -52,6 +53,38 @@ impl Item {
             #[cfg(feature = "clap-host")]
             Body::Clap(c) => c.plugin.name.clone(),
             Body::Missing(s) => s.clap.as_ref().and_then(|c| c.name.clone()).unwrap_or_else(|| s.kind.clone()),
+        }
+    }
+
+    /// Whether this item is the module `s` describes, whatever its values.
+    fn holds(&self, s: &RackItemSettings) -> bool {
+        match &self.body {
+            Body::Native(kind) => kind.id == s.kind,
+            #[cfg(feature = "clap-host")]
+            Body::Clap(c) => {
+                s.kind == CLAP_KIND && s.clap.as_ref().is_some_and(|clap| clap.bundle.as_ref() == Some(&c.plugin.bundle) && clap.plugin_id.as_ref() == Some(&c.plugin.plugin_id))
+            }
+            Body::Missing(_) => false,
+        }
+    }
+
+    /// Take the saved On, Blend and values.
+    fn set(&mut self, s: &RackItemSettings) {
+        self.shared.enabled.store(s.enabled, Ordering::Relaxed);
+        self.shared.mix.set(s.mix);
+        match &mut self.body {
+            Body::Native(_) => s.values.apply(&[&self.shared.params]),
+            #[cfg(feature = "clap-host")]
+            Body::Clap(c) => {
+                let Some(clap) = &s.clap else { return };
+                for (&pid, &v) in &clap.values {
+                    c.plugin.set_value(pid, v);
+                }
+                if !clap.knobs.is_empty() {
+                    c.knobs = std::array::from_fn(|k| clap.knobs.get(k).copied());
+                }
+            }
+            Body::Missing(_) => {}
         }
     }
 
@@ -127,26 +160,65 @@ impl Rack {
         Item { id, shared, body, live: false, error: None }
     }
 
+    /// Recreate one saved module.
+    fn restore_item(&mut self, s: &RackItemSettings, ctx: &egui::Context) -> Item {
+        let (body, shared, error) = match modules::kind(&s.kind) {
+            Some(kind) => {
+                let shared = ModuleShared::new(kind.defs);
+                s.values.apply(&[&shared.params]);
+                (Body::Native(kind), shared, None)
+            }
+            None => match restore_plugin(s, ctx) {
+                Ok(body) => (body, ModuleShared::new(&[]), None),
+                Err(e) => (Body::Missing(Box::new(s.clone())), ModuleShared::new(&[]), Some(e)),
+            },
+        };
+        shared.enabled.store(s.enabled, Ordering::Relaxed);
+        shared.mix.set(s.mix);
+        let mut item = self.new_item(body, shared);
+        item.error = error;
+        item
+    }
+
     /// Recreate the modules saved in the settings file.
     pub fn restore(&mut self, saved: &[RackItemSettings], ctx: &egui::Context) {
         for s in saved.iter().take(MAX_MODULES) {
-            let (body, shared, error) = match modules::kind(&s.kind) {
-                Some(kind) => {
-                    let shared = ModuleShared::new(kind.defs);
-                    s.values.apply(&[&shared.params]);
-                    (Body::Native(kind), shared, None)
-                }
-                None => match restore_plugin(s, ctx) {
-                    Ok(body) => (body, ModuleShared::new(&[]), None),
-                    Err(e) => (Body::Missing(Box::new(s.clone())), ModuleShared::new(&[]), Some(e)),
-                },
-            };
-            shared.enabled.store(s.enabled, Ordering::Relaxed);
-            shared.mix.set(s.mix);
-            let mut item = self.new_item(body, shared);
-            item.error = error;
+            let item = self.restore_item(s, ctx);
             self.items.push(item);
         }
+    }
+
+    /// Replace the rack with a saved one (a user preset). A module the saved rack also has keeps
+    /// running and only takes the saved values, so presets over the same chain switch seamlessly.
+    pub fn load(&mut self, saved: &[RackItemSettings], mut live: Option<Live>, ctx: &egui::Context) {
+        self.error = None;
+        let saved = &saved[..saved.len().min(MAX_MODULES)];
+        let mut old: Vec<Option<Item>> = std::mem::take(&mut self.items).into_iter().map(Some).collect();
+        let kept: Vec<Option<Item>> = saved
+            .iter()
+            .map(|s| {
+                let slot = old.iter_mut().find(|o| o.as_ref().is_some_and(|item| item.holds(s)))?;
+                let mut item = slot.take()?;
+                item.set(s);
+                Some(item)
+            })
+            .collect();
+        // The engine must let go of the old modules before the new ones arrive, or it could be full.
+        for item in old.into_iter().flatten() {
+            self.discard(item, &mut live);
+        }
+        for (s, kept) in saved.iter().zip(kept) {
+            let item = match kept {
+                Some(item) => item,
+                None => {
+                    let mut item = self.restore_item(s, ctx);
+                    self.go_live(&mut item, &mut live);
+                    item
+                }
+            };
+            self.items.push(item);
+        }
+        self.send_order(&mut live);
     }
 
     pub fn save(&mut self) -> Vec<RackItemSettings> {
@@ -244,13 +316,18 @@ impl Rack {
         let _ = live.tx.push(Command::Order(ids));
     }
 
-    fn add(&mut self, body: Body, shared: Arc<ModuleShared>, live: &mut Option<Live>) {
-        let mut item = self.new_item(body, shared);
+    /// Hand a new item's audio half to the running engine, if there is one.
+    fn go_live(&self, item: &mut Item, live: &mut Option<Live>) {
         if let Some(l) = live.as_mut()
             && let Some(module) = item.make(l.sr, self.seed, l.app)
         {
             item.live = l.tx.push(Command::Add(RackModule { id: item.id, module, shared: item.shared.clone() })).is_ok();
         }
+    }
+
+    fn add(&mut self, body: Body, shared: Arc<ModuleShared>, live: &mut Option<Live>) {
+        let mut item = self.new_item(body, shared);
+        self.go_live(&mut item, live);
         self.items.push(item);
         self.send_order(live);
     }
@@ -258,6 +335,12 @@ impl Rack {
     fn remove(&mut self, id: ModuleId, live: &mut Option<Live>) {
         let Some(i) = self.items.iter().position(|item| item.id == id) else { return };
         let item = self.items.remove(i);
+        self.discard(item, live);
+    }
+
+    /// Take an item that has left the list out of the engine.
+    fn discard(&mut self, item: Item, live: &mut Option<Live>) {
+        let id = item.id;
         if let (true, Some(l)) = (item.live, live.as_mut()) {
             let _ = l.tx.push(Command::Remove(id));
         }
@@ -412,6 +495,22 @@ fn speech_status(ui: &mut egui::Ui, app: &Shared) {
     ui.label(RichText::new(text).small().color(color));
 }
 
+/// Every word TitoBot knows, each with the other things people say that mean it. Read from the
+/// lexicon, so it cannot fall behind it.
+fn word_list(ui: &mut egui::Ui, index: usize) {
+    egui::CollapsingHeader::new(RichText::new(format!("Words ({})", lexicon::WORDS.len())).small()).id_salt(("words", index)).show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for word in lexicon::WORDS {
+                ui.label(RichText::new(word.text).monospace().color(theme::ACCENT));
+                if !word.also.is_empty() {
+                    ui.label(RichText::new(format!("({})", word.also.join(", "))).small().color(theme::TEXT_DIM));
+                }
+                ui.add_space(8.0);
+            }
+        });
+    });
+}
+
 /// One module: reorder/remove header, then On, Mix and the module's own knobs. `app` is there
 /// while audio is running.
 fn strip(ui: &mut egui::Ui, item: &mut Item, index: usize, count: usize, app: Option<&Shared>, action: &mut Option<Action>) {
@@ -454,6 +553,11 @@ fn strip(ui: &mut egui::Ui, item: &mut Item, index: usize, count: usize, app: Op
             && kind.id == modules::titobot::KIND.id
         {
             speech_status(ui, app);
+        }
+        if let Body::Native(kind) = &item.body
+            && kind.id == modules::titobot::KIND.id
+        {
+            word_list(ui, index);
         }
 
         ui.horizontal_wrapped(|ui| {
@@ -565,6 +669,18 @@ mod tests {
         again.restore(&saved, &ctx);
         assert_eq!(again.items[0].shared.params.get_index(1), 5.0);
         assert_eq!(again.items[2].shared.params.get_index(1), rack.items[2].shared.params.get_index(1));
+
+        // Loading a preset's rack keeps the modules both racks have (here 2 and 4, the second
+        // taking the preset's values) and swaps the rest.
+        let mut preset = Settings::default().rack_items();
+        preset[2].values.0.insert("lofi_bits".into(), 7.0);
+        rack.load(&preset, Some(Live { sr: 48000.0, tx: &mut tx, app: &app }), &ctx);
+        assert_eq!(ids(&rack), [5, 2, 4]);
+        assert_eq!(run(&mut engine), [5, 2, 4]);
+        assert!(rack.items.iter().all(|i| i.live));
+        assert_eq!(rack.items[2].shared.params.get_index(1), 7.0);
+        assert_eq!(rack.save(), preset);
+        rack.idle(Some(&mut garbage_rx));
 
         // A module this build cannot recreate is kept, not silently dropped.
         let mut unknown = saved.clone();

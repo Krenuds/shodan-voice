@@ -9,7 +9,7 @@ use crate::audio::io::{self, AudioSettings, DeviceInfo, Running};
 use crate::audio::module::RackModule;
 use crate::modules;
 use crate::params::{Params, io::P};
-use crate::presets::{self, Settings, Values};
+use crate::presets::{self, Settings, UserPreset, Values};
 use crate::shared::Shared;
 use eframe::egui::{self, RichText};
 use std::sync::Arc;
@@ -133,6 +133,32 @@ impl App {
         self.last_save = Instant::now();
     }
 
+    /// A user preset brings its own rack; one saved before presets held the rack only sets knobs.
+    fn load_user_preset(&mut self, name: &str, ctx: &egui::Context) {
+        let Some(preset) = self.settings.user_presets.get(name) else { return };
+        match &preset.rack {
+            Some(saved) => {
+                preset.knobs.apply(&[&self.shared.io]);
+                let live = match (&self.audio, self.cmd_tx.as_mut()) {
+                    (Some(audio), Some(tx)) => Some(Live { sr: audio.sample_rate, tx, app: &self.shared }),
+                    _ => None,
+                };
+                self.rack.load(saved, live, ctx);
+            }
+            None => preset.knobs.apply(&presets::targets(&self.shared.io, self.rack.params())),
+        }
+        self.preset_label = name.to_string();
+        self.save_settings();
+    }
+
+    /// Save the I/O knobs and the whole rack under `name`, replacing a preset of that name.
+    fn save_user_preset(&mut self, name: String) {
+        let preset = UserPreset { knobs: Values::capture(&[&self.shared.io]), rack: Some(self.rack.save()) };
+        self.settings.user_presets.insert(name.clone(), preset);
+        self.preset_label = name;
+        self.save_settings();
+    }
+
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("S.H.O.D.A.N.").monospace().size(22.0).strong().color(theme::ACCENT));
@@ -140,6 +166,7 @@ impl App {
             ui.add_space(16.0);
 
             ui.label("Preset");
+            let mut load = None;
             egui::ComboBox::from_id_salt("preset").width(170.0).selected_text(&self.preset_label).show_ui(ui, |ui| {
                 for p in presets::BUILTIN {
                     if ui.selectable_label(self.preset_label == p.name, p.name).clicked() {
@@ -151,11 +178,10 @@ impl App {
                     ui.separator();
                 }
                 let mut delete = None;
-                for (name, values) in &self.settings.user_presets {
+                for name in self.settings.user_presets.keys() {
                     ui.horizontal(|ui| {
                         if ui.selectable_label(&self.preset_label == name, name).clicked() {
-                            values.apply(&presets::targets(&self.shared.io, self.rack.params()));
-                            self.preset_label = name.clone();
+                            load = Some(name.clone());
                         }
                         if ui.small_button("🗙").on_hover_text("Delete preset").clicked() {
                             delete = Some(name.clone());
@@ -166,14 +192,20 @@ impl App {
                     self.settings.user_presets.remove(&d);
                 }
             });
+            if let Some(name) = load {
+                self.load_user_preset(&name, ui.ctx());
+            }
             ui.add(egui::TextEdit::singleline(&mut self.new_preset).hint_text("new preset name").desired_width(130.0));
-            if ui.add_enabled(!self.new_preset.trim().is_empty(), egui::Button::new("Save")).clicked() {
+            if ui.add_enabled(!self.new_preset.trim().is_empty(), egui::Button::new("Save")).on_hover_text("Save the knobs and the rack as a preset").clicked() {
                 let name = self.new_preset.trim().to_string();
-                let values = Values::capture(&self.targets());
-                self.settings.user_presets.insert(name.clone(), values);
-                self.preset_label = name;
                 self.new_preset.clear();
-                self.save_settings();
+                self.save_user_preset(name);
+            }
+            let loaded = self.settings.user_presets.contains_key(&self.preset_label);
+            if ui
+                .add_enabled(loaded, egui::Button::new("Update"))
+                .on_hover_text(format!("Save the current knobs and rack into \"{}\"", self.preset_label)).on_disabled_hover_text("Load one of your presets to update it").clicked() {
+                self.save_user_preset(self.preset_label.clone());
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

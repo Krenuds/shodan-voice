@@ -202,6 +202,18 @@ pub struct RackItemSettings {
     pub clap: Option<SlotSettings>,
 }
 
+/// A preset saved by the user: the I/O knobs and the whole rack (which modules, their order and
+/// their values). Unlike a built-in preset, loading one replaces the rack.
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
+pub struct UserPreset {
+    /// Knobs of the I/O stage. A preset saved before presets held the rack has no `rack`, and
+    /// these are then also the knobs of the first module of each kind.
+    #[serde(flatten)]
+    pub knobs: Values,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rack: Option<Vec<RackItemSettings>>,
+}
+
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct Settings {
@@ -211,7 +223,7 @@ pub struct Settings {
     pub monitor: bool,
     /// Knobs of the I/O stage and of the first module of each kind (what presets act on).
     pub knobs: Values,
-    pub user_presets: BTreeMap<String, Values>,
+    pub user_presets: BTreeMap<String, UserPreset>,
     /// `None` in files written before the rack existed; see [`Settings::rack_items`].
     pub rack: Option<Vec<RackItemSettings>>,
     pub rack_open: bool,
@@ -294,6 +306,18 @@ mod tests {
                 assert!(set_key(&targets, key, v), "{}: unknown key '{key}'", preset.name);
             }
         }
+    }
+
+    #[test]
+    fn user_presets_keep_the_rack_and_old_ones_still_load() {
+        let old: UserPreset = serde_json::from_str(r#"{ "base_pitch": 3.0, "out_gain": 4.0 }"#).unwrap();
+        assert_eq!(old.rack, None);
+        assert_eq!(old.knobs.0["base_pitch"], 3.0);
+
+        let rack = Settings::default().rack_items();
+        let new = UserPreset { knobs: Values([("out_gain".to_string(), 4.0)].into()), rack: Some(rack) };
+        let reloaded: UserPreset = serde_json::from_str(&serde_json::to_string(&new).unwrap()).unwrap();
+        assert_eq!(reloaded, new);
     }
 
     #[test]

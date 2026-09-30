@@ -1,93 +1,53 @@
-# Handoff: grow TitoBot's lexicon
+# Handoff: TitoBot's lexicon after the first 32 words
 
-Next session has one goal: **take the robot language from 4 words to a vocabulary large enough to
-talk with**. `CLAUDE.md` ("TitoBot and speech") describes how the pieces fit. Nothing below is
-decided unless it says so.
+`CLAUDE.md` ("TitoBot and speech") describes how the pieces fit. Nothing below is decided unless
+it says so.
 
 ## Where things stand
 
-- The speed work is done but **uncommitted** (10 modified files on `master`). Commit it first
-  (`/sendit`) so the lexicon work starts from a clean tree.
-- TitoBot now recognises while the person is talking (`speech::Hearing`): a word is sent as soon
-  as another word follows it, two passes end on it, or the voice has been quiet for 80 ms. The
-  user tried it live in the release build and called it "perfect". Decided: late is worse than
-  wrong.
-- Not measured: pass time with the game on the GPU. The strip shows it; if it goes well past
-  120 ms, raise `PASS_INTERVAL` in `src/speech/mod.rs`.
+- `src/lexicon.rs` has 32 words in ten classes, with synonyms (`also`) and two-word phrases.
+  Motifs are hand-designed from per-class building blocks; rests inside a motif are new.
+- Checked offline only: every word through `--say`, and a synthesised sentence through `--hear`
+  (phrases arrive as one word, 80–240 ms after the voice). **Not yet tried live with a mic.**
+- Decided: late is worse than wrong; synonyms share a motif; filler words stay silent; a lone
+  "you" is treated as noise and never spoken.
+- User presets now save the whole rack; the Voice window has an **Update** button that re-saves
+  the loaded preset. `tito` and `rashbot` in the real settings were saved before that (no `rack`)
+  and need an Update to pick up their rack.
 
-## The lexicon today
+## Open
 
-`src/lexicon.rs`: `WORDS` is a static table, one line per word, each a fixed motif of `Note`s
-(semitones above the key, optional slide, length in beats). Four words: `yes`, `no`, `good`,
-`bad`. `lookup` matches one whitespace token, ignoring case and surrounding punctuation. The
-module plays a motif as a sine-to-square tone with a short envelope (`src/modules/titobot.rs`).
-
-Words travel as `u32` indices into `WORDS`, so the table can grow freely; the order of entries
-is not persisted anywhere.
-
-## What "greatly expanding" runs into
-
-1. **Hand-writing motifs does not scale.** Four were designed one by one with a comment each. A
-   few hundred need a system: either rules that generate a motif from the word (its meaning
-   class, syllables, or sounds), or a small set of building blocks combined by hand. The user
-   wants listeners to be able to learn the language, so the same word must always sound the
-   same, and related words should probably sound related (`yes`/`no` are mirrors today).
-2. **Motif space.** With only pitch and rhythm on one tone, several hundred distinct motifs of
-   3–5 beats get hard to tell apart. More dimensions would help: tone colour per word class,
-   rests inside a motif, octave, vibrato, two-tone chords. That touches the synth in
-   `titobot.rs`, and the parked idea of TitoBot getting its own sound bank.
-3. **Word forms.** `lookup` is exact: "goods", "better", "yeah", "nope", "don't" all miss. A big
-   lexicon needs a decision on stemming, synonyms mapping to one motif (`yeah` → `yes`), and
-   contractions. Whisper also writes numbers as digits.
-4. **Multi-word entries.** "thank you", "I don't know". `lookup` is per token, and
-   `settled_words` in `src/speech/mod.rs` settles and counts single tokens (`Stream::said`), so
-   phrases need a change in both. Streaming makes this harder: "thank" may already be said when
-   "you" arrives.
-5. **Wrong words get more likely.** Streaming can send a half-said word. With four words that is
-   rare; with hundreds, short words that begin longer ones ("no" / "not" / "nobody", "in" /
-   "into") will fire early. If it becomes a problem, require two passes to agree on every word
-   (about 120 ms slower), or only for words that are a prefix of another entry.
-6. **Whisper says "you" for noise.** `transcripts.tsv` has 14 lone "you" utterances from
-   breaths or clicks. If `you` gets a motif the robot will say it at random; filter lone "you"
-   (and similar: "oh", "thank you") or raise the gate before adding such words.
-7. **Speed of speech.** Motifs are 330–550 ms and a fast speaker says 3–4 words a second. With
-   most words known instead of almost none, the queue will back up even with the catch-up
-   (`HURRY`, up to 2x). Shorter motifs for common words, or skipping function words, may be
-   needed.
-
-## Where the words come from
-
-`%APPDATA%\shodan-voice\config\transcripts.tsv` (time, text, unknown words) was meant to be the
-source. It has 122 lines, nearly all test utterances of the four words; the most frequent
-unknown words are `you` 14, `oh` 7, `cable` 5, `is` 4. **It is too small to choose a vocabulary
-from.** Options: a standard frequency list (a few hundred most common spoken English words), a
-list the user writes for what they say in game, or have the user talk for a while first and
-mine the log.
-
-## Questions for the user
-
-- How many words, roughly: 100, 500, everything common?
-- Which words matter: general conversation, or game callouts and names?
-- Should every known word be spoken, or should the robot skip filler ("the", "a", "is") to keep up?
-- Generated motifs from rules, or hand-tuned ones for a core set and generated for the rest?
-- Do synonyms share a motif (`yeah`, `yep` → `yes`)?
-- May the four existing motifs change if a system needs them to?
+1. **Can people tell the words apart?** Nobody has listened to the 32 motifs yet. Likely
+   confusions: `ok` / `now` / `here` (all two short notes), `what` / `where` (same ending by
+   design), `me` / `you` (one tone each, told apart only by pitch).
+2. **Whisper's noise words.** Only a lone "you" is filtered. `transcripts.tsv` also showed "oh"
+   (not in the lexicon) and Whisper is known to write "Thank you." for silence; `thanks` would
+   then be spoken at random. If that happens, extend `lexicon::is_noise` or raise the gate.
+3. **Half-said words.** Streaming can send a word that turns out to be the start of a longer
+   one. None of the 32 is a prefix of another entry, but growing the table will bring such
+   pairs ("no" / "not" / "nobody"). Then require two passes to agree for those words.
+4. **Keeping up.** Most words are 2–3 beats, and `HURRY` plays up to 2x. Untested with a fast
+   speaker now that many common words are known.
+5. **Growing past 32.** Hand-writing stops scaling at some point; the classes are the start of
+   a rule system (tone colour or octave per class would add room). Word forms are listed by
+   hand in `also`; there is no stemming, and Whisper writes numbers as digits.
+6. Not measured: recogniser pass time with the game on the GPU. The strip shows it; if it goes
+   well past 120 ms, raise `PASS_INTERVAL` in `src/speech/mod.rs`.
 
 ## Working without a mic
 
 ```powershell
 # Known words straight to the robot
-cargo run --release -- --render samples\input_tts.wav samples\out_say.wav --rack titobot --say "yes no good bad"
+cargo run --release -- --render samples\input_tts.wav samples\out_say.wav --rack titobot --say "hello, thank you, follow me"
 # Through the recogniser, same code as live; prints when each word reaches the robot
-cargo run --release -- --render samples\out_words_in.wav samples\out_stream.wav --rack titobot --hear
+cargo run --release -- --render samples\out_phrases_in.wav samples\out_phrases.wav --rack titobot --hear
 ```
 
-`samples\out_words_in.wav` (synthesised "Yes. No. Good. Bad. Maybe. Yes, that is good.") is
-gitignored; recreate it, or a longer test sentence, with Windows `System.Speech`. The release exe
-prints nothing when run directly from some shells; `cargo run` or redirecting its output works.
+`samples\out_phrases_in.wav` (synthesised "Hello. Thank you. I don't know. Wait here. Follow me.
+Where you go now?") is gitignored; recreate it with Windows `System.Speech`. With many words
+queued at once `--say` plays them hurried; say a few at a time to hear them at the tempo.
 
-Tests to keep green: `lexicon::tests` (unique, playable words) and `speech::tests`
-(`settled_words`).
+Tests to keep green: `lexicon::tests` and `speech::tests`.
 
 ## Environment gotchas
 
@@ -100,6 +60,6 @@ Tests to keep green: `lexicon::tests` (unique, playable words) and `speech::test
 
 ## Parked
 
-Judging motifs for learnability with real listeners; TitoBot's own sound bank; two TitoBots in
-one rack doubling every word; whole-rack presets; drag-and-drop reordering; click-testing with a
-real CLAP plugin; keyword spotting as a fast path beside Whisper.
+TitoBot's own sound bank; two TitoBots in one rack doubling every word;
+drag-and-drop reordering; click-testing with a real CLAP plugin; keyword spotting as a fast path
+beside Whisper.
