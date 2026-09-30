@@ -4,6 +4,7 @@
 mod audio;
 mod dsp;
 mod gui;
+mod lexicon;
 mod modules;
 mod params;
 #[cfg(feature = "clap-host")]
@@ -11,6 +12,7 @@ mod plugins;
 mod presets;
 mod render;
 mod shared;
+mod speech;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

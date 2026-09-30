@@ -13,6 +13,7 @@ use crate::plugins::{LoadedPlugin, PluginInfo, scan};
 use crate::presets::SlotSettings;
 use crate::presets::{CLAP_KIND, RackItemSettings, Values};
 use crate::shared::Shared;
+use crate::speech;
 use eframe::egui::{self, RichText};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -310,9 +311,10 @@ impl Rack {
             ui.label(RichText::new(text).monospace().size(12.0).color(theme::TEXT_DIM));
         };
         flow(ui, "MIC  ·  input gain");
-        let (count, running) = (self.items.len(), live.is_some());
+        let count = self.items.len();
+        let app = live.as_ref().map(|l| l.app.clone());
         for (index, item) in self.items.iter_mut().enumerate() {
-            ui.push_id(item.id, |ui| strip(ui, item, index, count, running, &mut action));
+            ui.push_id(item.id, |ui| strip(ui, item, index, count, app.as_deref(), &mut action));
         }
         if count == 0 {
             ui.label(RichText::new("The rack is empty: your voice passes through unchanged.").color(theme::WARN));
@@ -395,8 +397,25 @@ fn restore_plugin(s: &RackItemSettings, _ctx: &egui::Context) -> Result<Body, St
     Err(if s.kind == CLAP_KIND { "this build cannot host CLAP plugins".into() } else { format!("unknown module kind '{}'", s.kind) })
 }
 
-/// One module: reorder/remove header, then On, Mix and the module's own knobs.
-fn strip(ui: &mut egui::Ui, item: &mut Item, index: usize, count: usize, running: bool, action: &mut Option<Action>) {
+/// What the speech recogniser behind TitoBot is doing.
+fn speech_status(ui: &mut egui::Ui, app: &Shared) {
+    let s = &app.speech;
+    let (text, color) = match s.state.load(Ordering::Relaxed) {
+        speech::LOADING => ("Loading the speech model…".to_string(), theme::TEXT_DIM),
+        speech::LISTENING => match s.text() {
+            heard if heard.is_empty() => ("Listening".to_string(), theme::TEXT_DIM),
+            heard => (format!("Heard: {heard}  ·  {:.0} ms", s.ms.get()), theme::TEXT_DIM),
+        },
+        speech::FAILED => (format!("Not listening: {}", s.text()), theme::WARN),
+        _ => return,
+    };
+    ui.label(RichText::new(text).small().color(color));
+}
+
+/// One module: reorder/remove header, then On, Mix and the module's own knobs. `app` is there
+/// while audio is running.
+fn strip(ui: &mut egui::Ui, item: &mut Item, index: usize, count: usize, app: Option<&Shared>, action: &mut Option<Action>) {
+    let running = app.is_some();
     let width = ui.available_width() - 20.0;
     egui::Frame::new().fill(theme::CARD).corner_radius(egui::CornerRadius::same(6)).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
         ui.set_width(width);
@@ -430,6 +449,11 @@ fn strip(ui: &mut egui::Ui, item: &mut Item, index: usize, count: usize, running
         });
         if let Some(e) = &item.error {
             ui.label(RichText::new(e).color(theme::DANGER).small());
+        }
+        if let (Body::Native(kind), Some(app)) = (&item.body, app)
+            && kind.id == modules::titobot::KIND.id
+        {
+            speech_status(ui, app);
         }
 
         ui.horizontal_wrapped(|ui| {

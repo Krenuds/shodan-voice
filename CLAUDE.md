@@ -4,14 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`shodan-voice`: a Windows desktop app (Rust, edition 2024, eframe/egui) that turns a live microphone into the SHODAN voice from System Shock in real time, and sends it to an output device (typically a virtual audio cable) plus an optional headphone monitor. The sound is made by a reorderable **rack of modules**: the built-in SHODAN stages, any number of CLAP plugins, and whatever native modules get added later.
+`shodan-voice`: a Windows desktop app (Rust, edition 2024, eframe/egui) that turns a live microphone into the SHODAN voice from System Shock in real time, and sends it to an output device (typically a virtual audio cable) plus an optional headphone monitor. The sound is made by a reorderable **rack of modules**: the built-in SHODAN stages, any number of CLAP plugins, and other native modules such as TitoBot, which listens with Whisper and answers in a robot language instead of the voice.
 
 ## Commands
 
 ```powershell
 cargo run                      # GUI (dev profile: own code opt-level 1, deps opt-level 3, so DSP is usable in debug)
 cargo build --release          # release build has no console window (windows_subsystem = "windows")
-cargo build --no-default-features   # without the CLAP host (drops the clack git dependencies and src/plugins)
+cargo build --no-default-features   # without the CLAP host and without speech (no clack, no whisper.cpp, no CUDA needed)
+cargo build --no-default-features --features clap-host,speech   # Whisper on the CPU: ~1.1 s per utterance instead of ~25 ms
 
 cargo test                     # all unit tests (they live in #[cfg(test)] modules next to the code)
 cargo test robot_flattens      # single test by name substring
@@ -27,7 +28,7 @@ Offline render — runs the exact same `Engine` over a WAV file, deterministic f
 cargo run -- --render samples\input_tts.wav samples\out_ss1.wav --preset ss1 --seed 1 --set robot=1 --set note=57
 ```
 
-It always renders the default rack (SHODAN Core → Metal → Lo-fi). `--preset` matches built-in names loosely (case/space/dash-insensitive prefix: `ss1`, `ss2`, `subtle`, `glitchstorm`). `--set` uses parameter `key` strings (an unknown key prints the full list). `samples/out_*.wav` is gitignored; `samples/input_tts.wav` is the committed test input. The default rack is sample-identical to the pre-rack engine, so hashing renders before and after a refactor is a cheap regression check.
+It renders the default rack (SHODAN Core → Metal → Lo-fi, the first three entries of `modules::NATIVE`) unless `--rack id,id,...` names another chain. `--say "text"` sends a transcript to the word bus (`Shared::words`); the TitoBot module plays the words that are in `src/lexicon.rs` and stays silent for the rest, e.g. `--rack titobot --say "yes no good bad"`. `--hear` (needs the `speech` feature and the model) instead runs the recogniser over the input WAV, prints what it heard, and delivers each utterance's words a fixed 50 ms after it ends, so the render stays reproducible. `--preset` matches built-in names loosely (case/space/dash-insensitive prefix: `ss1`, `ss2`, `subtle`, `glitchstorm`). `--set` uses parameter `key` strings (an unknown key prints the full list). `samples/out_*.wav` is gitignored; `samples/input_tts.wav` is the committed test input. The default rack is sample-identical to the pre-rack engine, so hashing renders before and after a refactor is a cheap regression check.
 
 Set `SHODAN_CONFIG_DIR` to a scratch folder to run the GUI without reading or overwriting the real `settings.json`.
 
@@ -92,6 +93,18 @@ Uses `clack-host` / `clack-extensions` pinned to a git rev. The engine only know
 Lifecycle is split across threads: `LoadedPlugin` (instance, params, editor window) lives on the GUI thread; `activate()` produces a boxed `Module` for the engine. A removed plugin waits in `Rack::pending` until its processor has come back over the garbage ring and been dropped; only then does deactivation succeed. Plugin parameter changes go GUI → audio through a per-plugin ring. Plugin output is sanitized (NaN/inf → 0, clamped) inside the processor.
 
 Plugin editors are hosted in a plain Win32 top-level window (`src/plugins/window.rs`) created on the GUI thread so eframe's message loop pumps it. Plugin discovery (`scan.rs`) covers the standard Windows CLAP directories plus `CLAP_PATH`.
+
+### TitoBot and speech (`src/lexicon.rs`, `src/speech`, `src/modules/titobot.rs`, features `speech` / `speech-cuda`, the latter on by default)
+
+The default build compiles whisper.cpp with CUDA, so it needs cmake, clang and the NVIDIA CUDA toolkit (13.4 here; `CUDA_PATH` and `CUDA_PATH_V13_4` must be set, which a shell opened before the install lacks), and the exe needs the toolkit's DLLs on `PATH`. The first build takes about five minutes.
+
+TitoBot replaces the voice with a robot language: a delayed translation that speaks only the words in `lexicon::WORDS` (each a fixed motif, so listeners can learn it) and is silent for everything else. Adding a word is one line in that table.
+
+Words travel as lexicon indices on `Shared::words` (`WordBus`: atomics, one writer, each module reads with its own position). `lexicon::say(text, bus)` is the only way text gets in; it returns the words it had no motif for.
+
+Live, TitoBot's `make` starts a `speech::listen` thread (only when `Shared::speech.enabled`, which the GUI sets and `--render` does not) and `process` pushes `ctx.dry` to it over a ring. The thread runs `segment::Segmenter` (resample to 16 kHz, level gate from the `tito_gate` knob, utterance = speech up to a 350 ms pause) and hands each utterance to `Recognizer` (Whisper via `whisper-rs`), then calls `lexicon::say` and appends `time, text, unknown words` to `transcripts.tsv` in the config folder — the material for growing the lexicon. The thread ends when the module (its ring producer) is dropped. Without the `speech` feature `Recognizer::new` always fails, so the module still works from `--say` and the strip shows why it is not listening.
+
+The model is `models/ggml-base.en.bin` in the config folder, or `SHODAN_WHISPER_MODEL`; it is loaded once per process. Do not shrink Whisper's `audio_ctx` to speed up short utterances: the decoder then loops on the same phrase.
 
 ### Platform
 

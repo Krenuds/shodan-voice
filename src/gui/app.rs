@@ -46,6 +46,7 @@ impl App {
     pub fn new(cc: &eframe::CreationContext) -> Self {
         theme::apply(&cc.egui_ctx);
         let shared = Arc::new(Shared::default());
+        shared.speech.enabled.store(true, Ordering::Relaxed);
         let mut settings = Settings::load();
         if settings.knobs.0.is_empty() {
             presets::BUILTIN[0].apply(&[&shared.io]);

@@ -3,6 +3,7 @@
 pub mod shodan;
 pub mod lofi;
 pub mod metal;
+pub mod titobot;
 
 use crate::audio::module::{Module, ModuleShared, RackModule};
 use crate::params::ParamDef;
@@ -18,7 +19,7 @@ pub struct ModuleKind {
     pub make: fn(sr: f32, seed: u64, shared: &Arc<ModuleShared>, app: &Arc<Shared>) -> Box<dyn Module>,
 }
 
-pub static NATIVE: [ModuleKind; 3] = [shodan::KIND, metal::KIND, lofi::KIND];
+pub static NATIVE: [ModuleKind; 4] = [shodan::KIND, metal::KIND, lofi::KIND, titobot::KIND];
 
 pub fn kind(id: &str) -> Option<&'static ModuleKind> {
     NATIVE.iter().find(|k| k.id == id)
@@ -36,9 +37,9 @@ impl Instance {
     }
 }
 
-/// The chain that makes up the classic SHODAN voice.
+/// The chain that makes up the classic SHODAN voice: the first three kinds.
 pub fn default_instances() -> Vec<Instance> {
-    NATIVE.iter().map(Instance::new).collect()
+    NATIVE[..3].iter().map(Instance::new).collect()
 }
 
 /// Build the audio-thread halves of `instances`, in order, for offline use.
