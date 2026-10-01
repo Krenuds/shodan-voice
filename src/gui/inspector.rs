@@ -713,7 +713,7 @@ fn plain_failure(raw: &str) -> &'static str {
 /// "Other", so the list cannot lose any.
 const CLASSES: &[(&str, &[&str])] = &[
     ("Answers", &["yes", "no", "ok", "maybe", "don't know"]),
-    ("Social", &["hello", "bye", "thanks", "sorry"]),
+    ("Social", &["hello", "goodbye", "thanks", "sorry"]),
     ("People", &["me", "you"]),
     ("Actions", &["go", "come", "stop", "wait", "help", "look", "want"]),
     ("Directions", &["left", "right"]),
@@ -722,6 +722,7 @@ const CLASSES: &[(&str, &[&str])] = &[
     ("Qualities", &["good", "bad"]),
     ("Questions", &["what", "where"]),
     ("Time", &["now"]),
+    ("Numbers", &["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]),
 ];
 
 /// Every word TitoBot knows, as chips by class. Hover for the other forms that mean it; click to

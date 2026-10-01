@@ -9,7 +9,6 @@ clack-host = { git = "https://github.com/prokopyl/clack", rev = "27ca28391b57a61
 cpal = "0.18.2"
 directories = "6.0.0"
 eframe = "0.36.2"
-global-hotkey = "0.8.0"
 hound = "3.5.1"
 rtrb = "0.4.0"
 rustfft = "6.4.1"

@@ -29,8 +29,6 @@ pub struct ToolbarCtx<'a> {
     pub preset_dirty: bool,
     /// The rack holds `MAX_MODULES`: adding would fail.
     pub rack_full: bool,
-    /// F8 is registered as a global hotkey.
-    pub hotkey: bool,
     pub running: bool,
     /// No VB-Cable (or similar) output device is installed.
     pub cable_missing: bool,
@@ -138,10 +136,9 @@ pub fn toolbar(ui: &mut egui::Ui, t: ToolbarCtx, st: &mut UiState) -> ToolbarOut
             }
 
             let bypass = t.shared.io.get(P::Bypass) > 0.5;
-            group(ui, if t.hotkey { "effect · f8" } else { "effect" }, |ui| {
-                let hint = if t.hotkey { "Toggle the effect (F8 works globally, even in a game)" } else { "Toggle the effect" };
+            group(ui, "effect", |ui| {
                 let (text, style) = if bypass { ("bypassed", KeyStyle::Light) } else { ("active", KeyStyle::Orange) };
-                if widgets::key_sized(ui, text, style, None, vec2(EFFECT_W, ROW)).on_hover_text(hint).clicked() {
+                if widgets::key_sized(ui, text, style, None, vec2(EFFECT_W, ROW)).on_hover_text("Toggle the effect").clicked() {
                     t.shared.io.set(P::Bypass, if bypass { 0.0 } else { 1.0 });
                 }
             });

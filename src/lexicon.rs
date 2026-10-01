@@ -6,6 +6,7 @@
 use crate::shared::WordBus;
 
 /// One tone of a motif. Pitches are semitones above the module's key.
+#[derive(Clone, Copy)]
 pub struct Note {
     pub from: f32,
     /// Pitch at the end of the note; differs from `from` for a slide.
@@ -55,8 +56,8 @@ pub static WORDS: &[Word] = &[
     Word { text: "don't know", also: &["dunno"], notes: &[n(5.0, 1.0), n(1.0, 1.0), g(3.0, 6.0, 2.0)] },
     // Social: long sweeps.
     Word { text: "hello", also: &["hi", "hey"], notes: &[g(-5.0, 7.0, 2.0)] },
-    // The mirror of hello, slower.
-    Word { text: "bye", also: &["goodbye"], notes: &[g(7.0, -5.0, 3.0)] },
+    // The mirror of hello, slower. Not "bye": that is what Whisper often writes for "five".
+    Word { text: "goodbye", also: &[], notes: &[g(7.0, -5.0, 3.0)] },
     // A high twinkle.
     Word { text: "thanks", also: &["thank", "thank you"], notes: &[n(12.0, 0.5), n(7.0, 0.5), n(12.0, 2.0)] },
     // Low, and sinking.
@@ -75,7 +76,7 @@ pub static WORDS: &[Word] = &[
     // Three alarm chirps.
     Word { text: "help", also: &[], notes: &[g(4.0, 11.0, 0.75), g(4.0, 11.0, 0.75), g(4.0, 11.0, 0.75)] },
     // A high trill.
-    Word { text: "look", also: &["see"], notes: &[n(12.0, 0.5), n(9.0, 0.5), n(12.0, 0.5), n(9.0, 0.5)] },
+    Word { text: "look", also: &[], notes: &[n(12.0, 0.5), n(9.0, 0.5), n(12.0, 0.5), n(9.0, 0.5)] },
     // Reaching up and holding on.
     Word { text: "want", also: &["need"], notes: &[g(-2.0, 5.0, 1.5), n(5.0, 1.0)] },
     // Directions: three steps, down for left and up for right.
@@ -101,7 +102,7 @@ pub static WORDS: &[Word] = &[
     Word { text: "there", also: &[], notes: &[n(0.0, 0.5), g(9.0, 14.0, 1.5)] },
     // Qualities.
     // A rising major arpeggio.
-    Word { text: "good", also: &["great", "nice"], notes: &[n(0.0, 1.0), n(4.0, 1.0), n(7.0, 1.0), n(12.0, 2.0)] },
+    Word { text: "good", also: &["great", "correct"], notes: &[n(0.0, 1.0), n(4.0, 1.0), n(7.0, 1.0), n(12.0, 2.0)] },
     // Falling through a tritone into a long slump.
     Word { text: "bad", also: &[], notes: &[n(6.0, 1.0), n(3.0, 1.0), g(0.0, -5.0, 3.0)] },
     // Questions: all end on the same rising slide.
@@ -109,7 +110,30 @@ pub static WORDS: &[Word] = &[
     Word { text: "where", also: &[], notes: &[n(10.0, 0.5), n(0.0, 0.5), g(5.0, 10.0, 1.5)] },
     // Time: an octave drop, the shortest word.
     Word { text: "now", also: &[], notes: &[n(12.0, 0.5), n(0.0, 0.5)] },
+    // Numbers: tally marks. Separated pips count one each and climb, a sweep up to the key is
+    // a hand of five, so a listener never has to count more than four of anything.
+    Word { text: "one", also: &["1"], notes: &[PIP[0]] },
+    Word { text: "two", also: &["2"], notes: &[PIP[0], TICK, PIP[1]] },
+    Word { text: "three", also: &["3"], notes: &[PIP[0], TICK, PIP[1], TICK, PIP[2]] },
+    Word { text: "four", also: &["4"], notes: &[PIP[0], TICK, PIP[1], TICK, PIP[2], TICK, PIP[3]] },
+    Word { text: "five", also: &["5"], notes: &[HAND] },
+    Word { text: "six", also: &["6"], notes: &[HAND, TICK, PIP[0]] },
+    Word { text: "seven", also: &["7"], notes: &[HAND, TICK, PIP[0], TICK, PIP[1]] },
+    Word { text: "eight", also: &["8"], notes: &[HAND, TICK, PIP[0], TICK, PIP[1], TICK, PIP[2]] },
+    Word { text: "nine", also: &["9"], notes: &[HAND, TICK, PIP[0], TICK, PIP[1], TICK, PIP[2], TICK, PIP[3]] },
+    Word { text: "ten", also: &["10"], notes: &[HAND, TICK, HAND] },
 ];
+
+/// What the recogniser writes for a word said on its own, where in a sentence it is a
+/// different, common word: a lone "for" is someone counting. Each maps to a word's `text`.
+const LONE: &[(&str, &str)] = &[("for", "four")];
+
+/// One counted unit of a number, the n-th climbing a step higher.
+const PIP: [Note; 4] = [n(0.0, 0.5), n(2.0, 0.5), n(4.0, 0.5), n(5.0, 0.5)];
+/// The gap that keeps the units of a number countable.
+const TICK: Note = r(0.4);
+/// Five: a sweep up an octave onto the key.
+const HAND: Note = g(-12.0, 0.0, 1.0);
 
 /// A token of a transcript without the punctuation around it.
 pub fn bare(token: &str) -> &str {
@@ -151,6 +175,12 @@ pub struct Span<'a> {
 /// A transcript as the robot understands it. Allocates, so not for the audio thread.
 pub fn spans(text: &str) -> Vec<Span<'_>> {
     let tokens: Vec<&str> = text.split_whitespace().collect();
+    if let [only] = tokens[..]
+        && let Some(&(_, text)) = LONE.iter().find(|(form, _)| same(form, only))
+    {
+        let word = WORDS.iter().position(|w| w.text == text).map(|i| i as u32);
+        return vec![Span { word, token: only, last: 0 }];
+    }
     let mut spans = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
@@ -213,6 +243,28 @@ mod tests {
         assert_eq!(lookup("I’m"), id("me"));
         assert_eq!(lookup("Thank you!"), id("thanks"));
         assert_eq!(lookup("thank"), id("thanks"));
+    }
+
+    #[test]
+    fn numbers_are_read_as_words_or_digits() {
+        assert_eq!(lookup("Seven."), id("seven"));
+        assert_eq!(lookup("7"), id("seven"));
+        assert_eq!(lookup("10,"), id("ten"));
+        assert_eq!(lookup("11"), None);
+    }
+
+    #[test]
+    fn a_lone_for_is_four_but_not_in_a_sentence() {
+        assert_eq!(lookup("For."), id("four"));
+        assert_eq!(spans("wait for me").iter().map(|s| s.word).collect::<Vec<_>>(), [id("wait"), None, id("me")]);
+    }
+
+    #[test]
+    fn lone_forms_name_real_words() {
+        for (form, text) in LONE {
+            assert!(WORDS.iter().any(|w| w.text == *text), "'{form}' means '{text}', which is not a word");
+            assert_eq!(match_at(&[form]), None, "'{form}' is already a word");
+        }
     }
 
     #[test]

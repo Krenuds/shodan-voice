@@ -80,18 +80,32 @@ struct Stream {
     /// The last pass released every word.
     settled: bool,
     pass_ms: f32,
+    /// Passes so far and the length of the audio the last one read, for the trace.
+    passes: u32,
+    pass_audio_ms: f32,
+    on_start: Option<Box<dyn FnMut(f32) + Send>>,
 }
 
 impl Hearing {
     /// `sr` is the rate of the audio that will be pushed.
     pub fn new(sr: f32) -> Result<Self, String> {
-        let stream = Stream { recognizer: Recognizer::new()?, text: String::new(), said: 0, passed_len: 0, passed_loud: 0, settled: false, pass_ms: 0.0 };
+        let stream = Stream { recognizer: Recognizer::new()?, text: String::new(), said: 0, passed_len: 0, passed_loud: 0, settled: false, pass_ms: 0.0, passes: 0, pass_audio_ms: 0.0, on_start: None };
         Ok(Self { segmenter: Segmenter::new(sr), ended: Vec::new(), stream })
     }
 
     /// How long the last pass of the recogniser took.
     pub fn pass_ms(&self) -> f32 {
         self.stream.pass_ms
+    }
+
+    /// Called with the audio length (ms) just before each pass of the recogniser.
+    pub fn on_pass_start(&mut self, f: impl FnMut(f32) + Send + 'static) {
+        self.stream.on_start = Some(Box::new(f));
+    }
+
+    /// Passes so far and the length of the audio the last one read (ms).
+    pub fn passes(&self) -> (u32, f32) {
+        (self.stream.passes, self.stream.pass_audio_ms)
     }
 
     pub fn push(&mut self, block: &[f32], gate_db: f32, mut out: impl FnMut(Heard)) -> Result<(), String> {
@@ -147,9 +161,14 @@ impl Stream {
     /// Recognise the utterance as it stands and give out the words that are new and will not
     /// change any more; with `all`, even the last one.
     fn pass(&mut self, audio: &[f32], loud: usize, quiet: usize, all: bool, out: &mut impl FnMut(Heard)) -> Result<(), String> {
+        if let Some(f) = &mut self.on_start {
+            f(audio.len() as f32 * 1000.0 / segment::RATE as f32);
+        }
         let started = Instant::now();
         let text = self.recognizer.transcribe(audio)?;
         self.pass_ms = started.elapsed().as_secs_f32() * 1000.0;
+        self.passes += 1;
+        self.pass_audio_ms = audio.len() as f32 * 1000.0 / segment::RATE as f32;
         let after_ms = quiet as f32 * segment::FRAME_MS + self.pass_ms;
 
         for word in settled_words(&text, &self.text, all).into_iter().skip(self.said) {
@@ -200,7 +219,13 @@ pub fn listen(sr: f32, app: Arc<Shared>, gate_db: impl Fn() -> f32 + Send + 'sta
         status.set_text("");
         status.state.store(LISTENING, Ordering::Relaxed);
 
+        let trace = &app.trace;
+        trace.event(format_args!("speech: listening"));
+        let tracer = app.clone();
+        hearing.on_pass_start(move |audio_ms| tracer.trace.event(format_args!("speech: pass start over {audio_ms:.0} ms of audio")));
         let mut block = Vec::with_capacity(4096);
+        let mut last_audio = Instant::now();
+        let mut passes = 0;
         loop {
             block.clear();
             while block.len() < block.capacity()
@@ -217,17 +242,33 @@ pub fn listen(sr: f32, app: Arc<Shared>, gate_db: impl Fn() -> f32 + Send + 'sta
             }
             // Audio still waiting in the ring is delay the recogniser does not know about.
             let behind_ms = rx.slots() as f32 * 1000.0 / sr;
+            let waited = last_audio.elapsed();
+            last_audio = Instant::now();
+            if waited > Duration::from_millis(100) {
+                trace.event(format_args!("speech: no audio for {:.0} ms", waited.as_secs_f32() * 1000.0));
+            }
             let result = hearing.push(&block, gate_db(), |heard| match heard {
                 Heard::Word { word, after_ms } => {
+                    trace.event(format_args!("speech: word \"{}\" {after_ms:.0} ms after the voice, backlog {behind_ms:.0} ms", lexicon::WORDS[word as usize].text));
                     app.words.push(word);
                     status.delay_ms.set(after_ms + behind_ms);
                 }
                 Heard::Text(text) => status.set_text(text),
-                Heard::Utterance(text) => log_transcript(text),
+                Heard::Utterance(text) => {
+                    trace.event(format_args!("speech: end of \"{text}\""));
+                    log_transcript(text)
+                }
             });
+            if let (n, audio_ms) = hearing.passes()
+                && n != passes
+            {
+                passes = n;
+                trace.event(format_args!("speech: pass {:.0} ms over {audio_ms:.0} ms of audio, backlog {behind_ms:.0} ms", hearing.pass_ms()));
+            }
             status.ms.set(hearing.pass_ms());
             if let Err(e) = result {
                 status.set_text(&e);
+                trace.event(format_args!("speech: error {e}"));
             }
         }
         status.state.store(OFF, Ordering::Relaxed);

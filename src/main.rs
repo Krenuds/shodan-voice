@@ -13,6 +13,7 @@ mod presets;
 mod render;
 mod shared;
 mod speech;
+mod trace;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

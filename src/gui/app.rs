@@ -11,7 +11,7 @@ use super::toolbar::{self, ToolbarCtx};
 use crate::audio::engine::{Command, MAX_MODULES, RackLink};
 use crate::audio::io::{self, AudioSettings, DeviceInfo, Running};
 use crate::audio::module::RackModule;
-use crate::params::{Params, io::P};
+use crate::params::Params;
 use crate::presets::{self, Settings, UserPreset, Values};
 use crate::shared::Shared;
 use eframe::egui;
@@ -39,7 +39,6 @@ pub struct App {
     /// The knobs as the preset left them, to show when they have been changed since.
     preset_values: Values,
     ui_state: UiState,
-    _hotkeys: Option<global_hotkey::GlobalHotKeyManager>,
     last_save: Instant,
 }
 
@@ -48,6 +47,7 @@ impl App {
         theme::apply(&cc.egui_ctx);
         let shared = Arc::new(Shared::default());
         shared.speech.enabled.store(true, Ordering::Relaxed);
+        start_trace(&shared);
         let mut settings = Settings::load();
         if settings.knobs.0.is_empty() {
             presets::BUILTIN[0].apply(&[&shared.io]);
@@ -62,8 +62,6 @@ impl App {
             // First run: send to the virtual cable if it's installed, never straight to speakers by choice.
             settings.output_device = outputs.iter().find(|d| is_cable_playback(&d.name)).map(|d| d.id.clone());
         }
-
-        let hotkeys = settings.hotkey_bypass.then(|| register_hotkey(&shared, &cc.egui_ctx)).flatten();
 
         let mut ui_state = UiState::default();
         // Open on the voice itself when there is one.
@@ -85,7 +83,6 @@ impl App {
             rack,
             preset_label: if settings.knobs.0.is_empty() { presets::BUILTIN[0].name.to_string() } else { "(last session)".into() },
             ui_state,
-            _hotkeys: hotkeys,
             last_save: Instant::now(),
             settings,
         };
@@ -195,7 +192,6 @@ impl App {
             preset_label: &self.preset_label,
             preset_dirty: Values::capture(&self.targets()) != self.preset_values,
             rack_full: self.rack.items().len() >= MAX_MODULES,
-            hotkey: self._hotkeys.is_some(),
             running: self.audio.is_some(),
             cable_missing: !self.outputs.iter().any(|d| is_cable_playback(&d.name)),
         };
@@ -264,6 +260,7 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.shared.trace.gui_frames.fetch_add(1, Ordering::Relaxed);
         self.rack.idle(self.garbage_rx.as_mut());
         self.ui_state.levels.update(&self.shared, &self.rack, self.audio.is_some());
         self.ui_state.fix_selection(&self.rack);
@@ -299,21 +296,26 @@ fn live<'a>(audio: &Option<Running>, tx: &'a mut Option<rtrb::Producer<Command>>
     }
 }
 
-/// F8 toggles bypass from anywhere, even while a game has focus.
-fn register_hotkey(shared: &Arc<Shared>, ctx: &egui::Context) -> Option<global_hotkey::GlobalHotKeyManager> {
-    use global_hotkey::hotkey::{Code, HotKey};
-    use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-    let manager = GlobalHotKeyManager::new().ok()?;
-    let hotkey = HotKey::new(None, Code::F8);
-    manager.register(hotkey).ok()?;
-    let shared = shared.clone();
-    let ctx = ctx.clone();
-    GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
-        if e.id == hotkey.id() && e.state == HotKeyState::Pressed {
-            let on = shared.io.get(P::Bypass) > 0.5;
-            shared.io.set(P::Bypass, if on { 0.0 } else { 1.0 });
-            ctx.request_repaint();
+/// Write `trace.log` in the config folder: a summary line every `trace::SUMMARY`, and the window
+/// in front whenever it changes. The thread ends with the app.
+fn start_trace(shared: &Arc<Shared>) {
+    let Some(dir) = presets::config_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    shared.trace.open(&dir.join("trace.log"));
+    let weak = Arc::downgrade(shared);
+    let _ = std::thread::Builder::new().name("trace".into()).spawn(move || {
+        let (mut title, mut underruns) = (String::new(), 0);
+        while let Some(shared) = weak.upgrade() {
+            let front = crate::trace::foreground_title();
+            if front != title {
+                shared.trace.event(format_args!("front: \"{front}\""));
+                title = front;
+            }
+            let u = shared.meters.underruns.load(Ordering::Relaxed);
+            shared.trace.summary(u.wrapping_sub(underruns));
+            underruns = u;
+            drop(shared);
+            std::thread::sleep(crate::trace::SUMMARY);
         }
-    }));
-    Some(manager)
+    });
 }

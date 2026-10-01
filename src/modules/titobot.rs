@@ -88,6 +88,9 @@ impl TitoBot {
         let word = self.queue[self.queue_start];
         self.queue_start = (self.queue_start + 1) % QUEUE;
         self.queue_len -= 1;
+        let trace = &self.app.trace;
+        trace.words_played.fetch_add(1, Ordering::Relaxed);
+        trace.last_played.store(word, Ordering::Relaxed);
         WORDS.get(word as usize)
     }
 }
@@ -96,13 +99,17 @@ impl Module for TitoBot {
     fn process(&mut self, ctx: &ModuleCtx, left: &mut [f32], right: &mut [f32]) {
         if let Some(tap) = &mut self.tap {
             // A full ring means the recogniser is far behind; that audio is simply not heard.
-            for &x in ctx.dry {
+            for (i, &x) in ctx.dry.iter().enumerate() {
                 if tap.push(x).is_err() {
+                    self.app.trace.tap_dropped.fetch_add((ctx.dry.len() - i) as u32, Ordering::Relaxed);
                     break;
                 }
             }
+            let waiting = tap.buffer().capacity() - tap.slots();
+            self.app.trace.speech_backlog_ms.set(waiting as f32 * 1000.0 / self.sr);
         }
         while let Some(word) = self.app.words.next(&mut self.seen) {
+            self.app.trace.words_taken.fetch_add(1, Ordering::Relaxed);
             if self.queue_len < QUEUE {
                 self.queue[(self.queue_start + self.queue_len) % QUEUE] = word;
                 self.queue_len += 1;

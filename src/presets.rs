@@ -229,7 +229,6 @@ pub struct Settings {
     /// The two fixed plugin slots of older versions; only read, to migrate them into the rack.
     #[serde(skip_serializing)]
     pub slots: Vec<SlotSettings>,
-    pub hotkey_bypass: bool,
 }
 
 /// Where settings live. `SHODAN_CONFIG_DIR` overrides it, to try things without touching the real ones.
@@ -249,7 +248,7 @@ impl Settings {
         Self::path()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| Self { hotkey_bypass: true, ..Self::default() })
+            .unwrap_or_default()
     }
 
     pub fn save(&self) -> std::io::Result<()> {

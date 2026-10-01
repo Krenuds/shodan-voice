@@ -11,7 +11,7 @@ The sound comes from a **patchbay** of modules: MIC → modules → OUTPUT. You 
 | **SHODAN Core** | The voice itself. Linear-prediction analysis splits the voice into source and formants. Glitches (stutter, reverse, warp) and pitch moves happen on the source, so the formants stay intelligible. It also has granular pitch shifting, up to four detuned layers, and robot pitch flattening. |
 | **Metal** | Flanger. |
 | **Lo-fi** | Bit and sample-rate crusher. |
-| **TitoBot** | Listens with Whisper and answers in a robot language. Each of its 32 known words ("yes", "no", "hello", "go", "danger"…) has its own learnable motif. It recognises words *while you are still talking*: about 25 ms per pass on a GPU. |
+| **TitoBot** | Listens with Whisper and answers in a robot language. Each of its 42 known words ("yes", "no", "hello", "go", "danger", and one to ten…) has its own learnable motif. It recognises words *while you are still talking*: about 25 ms per pass on a GPU. |
 | **CLAP plugins** | Any CLAP effect installed on your system, with its own editor window. |
 
 ## Using it
@@ -20,7 +20,7 @@ The sound comes from a **patchbay** of modules: MIC → modules → OUTPUT. You 
 - **Reorder:** drag a node.
 - **More options:** right-click a node.
 - **Change settings:** click a node to open its settings in the inspector on the right. MIC and OUTPUT are nodes too; that's where you pick devices.
-- **Keys:** `Del` removes the selected module, `Space` switches it on or off, the arrow keys walk the chain, and `Ctrl`+arrows move a module. **F8** toggles bypass from anywhere, even inside a game.
+- **Keys:** `Del` removes the selected module, `Space` switches it on or off, the arrow keys walk the chain, and `Ctrl`+arrows move a module.
 - **Presets:** the built-in presets are *SS1 – Citadel*, *SS2 – Von Braun*, *Subtle* and *Glitch Storm*. Your own presets save the whole rack.
 
 To use it as a microphone in other apps, install [VB-Audio Virtual Cable](https://vb-audio.com/Cable/). Set SHODAN's **OUTPUT** to the cable, then pick "CABLE Output" as the mic in Discord or OBS.

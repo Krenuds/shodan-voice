@@ -333,6 +333,7 @@ where
                 let ts = info.timestamp();
                 st.shared.meters.input_ms.set(ts.callback.duration_since(ts.capture).as_secs_f32() * 1000.0);
                 st.in_block.store(data.len() / channels, Ordering::Relaxed);
+                st.shared.trace.input.tick(st.shared.trace.epoch, data.len() / channels);
                 st.process(data, channels);
             },
             error_sink(errors, "input"),
@@ -372,6 +373,7 @@ where
                 let ts = info.timestamp();
                 let device_ms = ts.playback.duration_since(ts.callback).as_secs_f32() * 1000.0;
                 let buffered_ms = (rx.slots() / 2) as f32 / source_rate as f32 * 1000.0;
+                shared.trace.output[meter].tick(shared.trace.epoch, data.len() / channels);
                 let m = &shared.meters;
                 m.output_ms[meter].set(device_ms + buffered_ms);
                 for block in data.chunks_mut(channels * 4096) {

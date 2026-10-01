@@ -2,6 +2,7 @@
 //! the recogniser's status text, which the audio thread never touches).
 
 use crate::params::{Params, io};
+use crate::trace::Trace;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -130,10 +131,11 @@ pub struct Shared {
     pub meters: Meters,
     pub words: WordBus,
     pub speech: Speech,
+    pub trace: Trace,
 }
 
 impl Default for Shared {
     fn default() -> Self {
-        Self { io: Params::new(io::DEFS), meters: Meters::default(), words: WordBus::default(), speech: Speech::default() }
+        Self { io: Params::new(io::DEFS), meters: Meters::default(), words: WordBus::default(), speech: Speech::default(), trace: Trace::default() }
     }
 }
