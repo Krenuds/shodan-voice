@@ -1,4 +1,5 @@
-//! Offline processing: `shodan-voice --render in.wav out.wav [--preset NAME] [--seed N] [--set knob=value ...] [--rack id,id,...] [--say TEXT] [--hear]`.
+//! Offline processing: `in.wav out.wav [--preset NAME] [--seed N] [--set knob=value ...] [--rack id,id,...] [--say TEXT] [--hear]`.
+//! Either path may be `-` for stdin / stdout; the report lines then go to stderr.
 
 use crate::audio::engine::Engine;
 use crate::lexicon;
@@ -6,13 +7,15 @@ use crate::modules::{self, titobot};
 use crate::presets;
 use crate::shared::Shared;
 use crate::speech::{Heard, Hearing};
+use std::io::{Cursor, Read, Write};
 use std::sync::Arc;
 
 /// With `--hear`, how long after the audio that settled a word that word arrives: a typical
 /// recognition time on the GPU, fixed so renders stay reproducible.
 const HEAR_DELAY_S: f32 = 0.05;
 
-pub fn run(args: &[String]) -> Result<(), String> {
+/// `prog` is how the caller is invoked, for the usage line.
+pub fn run(prog: &str, args: &[String]) -> Result<(), String> {
     let mut positional = Vec::new();
     let mut preset = "ss1".to_string();
     let mut seed = 1u64;
@@ -33,8 +36,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
     }
     let [input, output] = positional.as_slice() else {
-        return Err("usage: shodan-voice --render in.wav out.wav [--preset NAME] [--seed N] [--set knob=value] [--rack id,id] [--say TEXT] [--hear]".into());
+        return Err(format!("usage: {prog} in.wav|- out.wav|- [--preset NAME] [--seed N] [--set knob=value] [--rack id,id] [--say TEXT] [--hear]"));
     };
+    let to_stdout = output == "-";
+    let report = |line: String| if to_stdout { eprintln!("{line}") } else { println!("{line}") };
 
     let shared = Arc::new(Shared::default());
     let rack = match &rack_ids {
@@ -64,7 +69,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
     }
 
-    let mut reader = hound::WavReader::open(input).map_err(|e| format!("{input}: {e}"))?;
+    let wav = if input == "-" {
+        let mut buf = Vec::new();
+        std::io::stdin().lock().read_to_end(&mut buf).map_err(|e| format!("stdin: {e}"))?;
+        buf
+    } else {
+        std::fs::read(input).map_err(|e| format!("{input}: {e}"))?
+    };
+    let mut reader = hound::WavReader::new(Cursor::new(wav)).map_err(|e| format!("{input}: {e}"))?;
     let spec = reader.spec();
     let channels = spec.channels as usize;
     let samples: Vec<f32> = match spec.sample_format {
@@ -83,7 +95,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if let Some(text) = &say {
         let unknown = lexicon::say(text, &shared.words);
         if !unknown.is_empty() {
-            println!("Not in the lexicon (silent): {}", unknown.join(" "));
+            report(format!("Not in the lexicon (silent): {}", unknown.join(" ")));
         }
     }
     // What the live listener would hear in the input, each word due when it would deliver it.
@@ -92,20 +104,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let gate = rack.iter().find(|i| i.kind.id == titobot::KIND.id).map_or(-40.0, |i| i.shared.params.get(titobot::P::TitoGate));
         let mut hearing = Hearing::new(sr)?;
         let mut now = 0;
-        let mut report = |now: usize, h: Heard| match h {
+        let mut on_heard = |now: usize, h: Heard| match h {
             Heard::Word { word, after_ms } => {
                 let due = now + (HEAR_DELAY_S * sr) as usize;
-                println!("{:6.2} s  {:<8} {after_ms:4.0} ms after the voice", due as f32 / sr, lexicon::WORDS[word as usize].text);
+                report(format!("{:6.2} s  {:<8} {after_ms:4.0} ms after the voice", due as f32 / sr, lexicon::WORDS[word as usize].text));
                 heard.push((due, word));
             }
             Heard::Text(_) => {}
-            Heard::Utterance(text) => println!("{:6.2} s  end of \"{text}\"", now as f32 / sr),
+            Heard::Utterance(text) => report(format!("{:6.2} s  end of \"{text}\"", now as f32 / sr)),
         };
         for chunk in mono.chunks(512) {
             now += chunk.len();
-            hearing.push(chunk, gate, |h| report(now, h))?;
+            hearing.push(chunk, gate, |h| on_heard(now, h))?;
         }
-        hearing.finish(|h| report(now, h))?;
+        hearing.finish(|h| on_heard(now, h))?;
     }
     let mut heard = heard.into_iter().peekable();
 
@@ -120,16 +132,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
 
     let out_spec = hound::WavSpec { channels: 2, sample_rate: spec.sample_rate, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
-    let mut writer = hound::WavWriter::create(output, out_spec).map_err(|e| format!("{output}: {e}"))?;
+    // Built in memory: the WAV header is patched at the end, which stdout can't seek back to.
+    let mut wav = Cursor::new(Vec::new());
+    let mut writer = hound::WavWriter::new(&mut wav, out_spec).map_err(|e| format!("{output}: {e}"))?;
     for (a, b) in l.iter().zip(&r) {
         writer.write_sample(*a).and_then(|_| writer.write_sample(*b)).map_err(|e| e.to_string())?;
     }
     writer.finalize().map_err(|e| e.to_string())?;
-    println!(
+    if to_stdout {
+        let mut out = std::io::stdout().lock();
+        out.write_all(wav.get_ref()).and_then(|_| out.flush()).map_err(|e| format!("stdout: {e}"))?;
+    } else {
+        std::fs::write(output, wav.get_ref()).map_err(|e| format!("{output}: {e}"))?;
+    }
+    report(format!(
         "Rendered {} s with preset '{}' to {output} ({} glitches)",
         mono.len() / spec.sample_rate as usize,
         preset.name,
         shared.meters.glitches.load(std::sync::atomic::Ordering::Relaxed)
-    );
+    ));
     Ok(())
 }

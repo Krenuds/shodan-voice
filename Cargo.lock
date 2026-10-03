@@ -3152,6 +3152,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shodan-render"
+version = "0.1.0"
+dependencies = [
+ "shodan-core",
+]
+
+[[package]]
 name = "shodan-voice"
 version = "0.1.0"
 dependencies = [

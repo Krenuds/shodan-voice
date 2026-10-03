@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["crates/shodan-core"]
+members = ["crates/shodan-core", "crates/shodan-render"]
 
 [dependencies]
 clack-extensions = { git = "https://github.com/prokopyl/clack", rev = "27ca28391b57a61bad4bb5099288a7bf9247350d", features = ["clack-host", "params", "audio-ports", "gui", "timer", "log", "state"], optional = true }

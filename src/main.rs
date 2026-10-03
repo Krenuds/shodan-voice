@@ -13,7 +13,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--render") {
         attach_console();
-        if let Err(e) = render::run(&args[1..]) {
+        if let Err(e) = render::run("shodan-voice --render", &args[1..]) {
             eprintln!("{e}");
             std::process::exit(1);
         }

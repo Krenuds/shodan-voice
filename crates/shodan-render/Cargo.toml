@@ -1,0 +1,11 @@
+[package]
+name = "shodan-render"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+shodan-core = { path = "../shodan-core" }
+
+[features]
+# Whisper for `--hear` (whisper.cpp; needs cmake and clang to build).
+speech = ["shodan-core/speech"]
