@@ -3,18 +3,16 @@ name = "shodan-voice"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["crates/shodan-core"]
+
 [dependencies]
 clack-extensions = { git = "https://github.com/prokopyl/clack", rev = "27ca28391b57a61bad4bb5099288a7bf9247350d", features = ["clack-host", "params", "audio-ports", "gui", "timer", "log", "state"], optional = true }
 clack-host = { git = "https://github.com/prokopyl/clack", rev = "27ca28391b57a61bad4bb5099288a7bf9247350d", optional = true }
 cpal = "0.18.2"
-directories = "6.0.0"
 eframe = "0.36.2"
-hound = "3.5.1"
 rtrb = "0.4.0"
-rustfft = "6.4.1"
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
-whisper-rs = { version = "0.16.0", optional = true }
+shodan-core = { path = "crates/shodan-core" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_System_Console"] }
@@ -23,9 +21,9 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Wind
 default = ["clap-host", "speech-cuda"]
 clap-host = ["dep:clack-host", "dep:clack-extensions"]
 # Speech recognition for the TitoBot module (whisper.cpp; needs cmake and clang to build).
-speech = ["dep:whisper-rs"]
+speech = ["shodan-core/speech"]
 # The same on an NVIDIA GPU; needs the CUDA toolkit to build and its DLLs to run.
-speech-cuda = ["speech", "whisper-rs/cuda"]
+speech-cuda = ["speech", "shodan-core/speech-cuda"]
 
 [profile.dev]
 opt-level = 1

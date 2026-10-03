@@ -1,3 +1,2 @@
-pub mod engine;
 pub mod io;
-pub mod module;
+pub use shodan_core::audio::{engine, module};

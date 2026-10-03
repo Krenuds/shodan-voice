@@ -306,7 +306,7 @@ fn start_trace(shared: &Arc<Shared>) {
     let _ = std::thread::Builder::new().name("trace".into()).spawn(move || {
         let (mut title, mut underruns) = (String::new(), 0);
         while let Some(shared) = weak.upgrade() {
-            let front = crate::trace::foreground_title();
+            let front = foreground_title();
             if front != title {
                 shared.trace.event(format_args!("front: \"{front}\""));
                 title = front;
@@ -318,4 +318,17 @@ fn start_trace(shared: &Arc<Shared>) {
             std::thread::sleep(crate::trace::SUMMARY);
         }
     });
+}
+
+/// Title of the window in front, to see when the user alt-tabs.
+fn foreground_title() -> String {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
+        let mut buf = [0u16; 256];
+        let n = GetWindowTextW(GetForegroundWindow(), buf.as_mut_ptr(), buf.len() as i32);
+        return String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+    }
+    #[allow(unreachable_code)]
+    String::new()
 }

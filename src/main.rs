@@ -2,18 +2,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
-mod dsp;
 mod gui;
-mod lexicon;
-mod modules;
-mod params;
 #[cfg(feature = "clap-host")]
 mod plugins;
-mod presets;
-mod render;
-mod shared;
-mod speech;
-mod trace;
+
+// The engine lives in `shodan-core`; its modules are re-exported so the GUI can name them as before.
+use shodan_core::{dsp, lexicon, modules, params, presets, render, shared, speech, trace};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

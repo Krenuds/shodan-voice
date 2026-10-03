@@ -1,0 +1,19 @@
+[package]
+name = "shodan-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+directories = "6.0.0"
+hound = "3.5.1"
+rtrb = "0.4.0"
+rustfft = "6.4.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+whisper-rs = { version = "0.16.0", optional = true }
+
+[features]
+# Speech recognition for the TitoBot module (whisper.cpp; needs cmake and clang to build).
+speech = ["dep:whisper-rs"]
+# The same on an NVIDIA GPU; needs the CUDA toolkit to build and its DLLs to run.
+speech-cuda = ["speech", "whisper-rs/cuda"]

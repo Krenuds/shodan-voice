@@ -119,16 +119,3 @@ impl Trace {
         ));
     }
 }
-
-/// Title of the window in front, to see when the user alt-tabs.
-pub fn foreground_title() -> String {
-    #[cfg(windows)]
-    unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
-        let mut buf = [0u16; 256];
-        let n = GetWindowTextW(GetForegroundWindow(), buf.as_mut_ptr(), buf.len() as i32);
-        return String::from_utf16_lossy(&buf[..n.max(0) as usize]);
-    }
-    #[allow(unreachable_code)]
-    String::new()
-}

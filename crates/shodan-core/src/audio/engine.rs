@@ -101,8 +101,7 @@ impl Engine {
         }
     }
 
-    /// Ids of the modules in playing order.
-    #[cfg(test)]
+    /// Ids of the modules in playing order. Allocates: for tests, not the audio thread.
     pub fn order(&self) -> Vec<ModuleId> {
         self.entries.iter().map(|e| e.m.id).collect()
     }
