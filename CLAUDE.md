@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `shodan-voice`: a Windows desktop app (Rust, edition 2024, eframe/egui) that turns a live microphone into the SHODAN voice from System Shock in real time, and sends it to an output device (typically a virtual audio cable) plus an optional headphone monitor. The sound is made by a reorderable **rack of modules**: the built-in SHODAN stages, any number of CLAP plugins, and other native modules such as TitoBot, which listens with Whisper and answers in a robot language instead of the voice.
 
+It is a Cargo workspace:
+
+- `shodan-voice` (repo root, `src/`): the desktop app. GUI, live device I/O (`src/audio/io.rs`), CLAP host, and the `--render` entry point.
+- `crates/shodan-core`: everything else. Engine, `dsp`, `modules`, params, presets, `render`, `shared`, `lexicon`, `trace`, and `speech` behind its `speech` / `speech-cuda` features (both off by default). No eframe, cpal, windows-sys or clack; builds on Linux. The desktop's `main.rs` re-exports its modules, so desktop code still says `crate::presets` and so on.
+- `crates/shodan-render`: headless offline render, depends only on `shodan-core`.
+
 ## Commands
 
 ```powershell
@@ -14,8 +20,9 @@ cargo build --release          # release build has no console window (windows_su
 cargo build --no-default-features   # without the CLAP host and without speech (no clack, no whisper.cpp, no CUDA needed)
 cargo build --no-default-features --features clap-host,speech   # Whisper on the CPU: ~1.1 s per utterance instead of ~25 ms
 
-cargo test                     # all unit tests (they live in #[cfg(test)] modules next to the code)
-cargo test robot_flattens      # single test by name substring
+cargo test --workspace         # all unit tests (they live in #[cfg(test)] modules next to the code); plain `cargo test` is the desktop crate only
+cargo test -p shodan-core      # engine, DSP, presets, lexicon; runs on Linux (add --features speech for the recogniser tests)
+cargo test --workspace robot_flattens   # single test by name substring
 cargo test jitter_buffer -- --nocapture   # several tests println! measured values worth reading
 
 # Tests that need a real CLAP plugin are #[ignore]d:
@@ -28,7 +35,14 @@ Offline render — runs the exact same `Engine` over a WAV file, deterministic f
 cargo run -- --render samples\input_tts.wav samples\out_ss1.wav --preset ss1 --seed 1 --set robot=1 --set note=57
 ```
 
-It renders the default rack (SHODAN Core → Metal → Lo-fi, the first three entries of `modules::NATIVE`) unless `--rack id,id,...` names another chain. `--say "text"` sends a transcript to the word bus (`Shared::words`); the TitoBot module plays the words that are in `src/lexicon.rs` and stays silent for the rest, e.g. `--rack titobot --say "yes no good bad"`. `--hear` (needs the `speech` feature and the model) instead runs the live listener (`speech::Hearing`) over the input WAV, prints each word with the time it reaches the robot, and delivers it a fixed 50 ms after the audio that settled it, so the render stays reproducible. This is how to compare recognition delay without a mic. `--preset` matches built-in names loosely (case/space/dash-insensitive prefix: `ss1`, `ss2`, `subtle`, `glitchstorm`). `--set` uses parameter `key` strings (an unknown key prints the full list). `samples/out_*.wav` is gitignored; `samples/input_tts.wav` is the committed test input. The default rack is sample-identical to the pre-rack engine, so hashing renders before and after a refactor is a cheap regression check.
+`crates/shodan-render` runs the same `render::run` without the desktop app; either path may be `-` for stdin / stdout (report lines then go to stderr):
+
+```sh
+cargo build --release -p shodan-render
+target/release/shodan-render - - --preset ss1 --seed 1 < samples/input_tts.wav > out.wav
+```
+
+It renders the default rack (SHODAN Core → Metal → Lo-fi, the first three entries of `modules::NATIVE`) unless `--rack id,id,...` names another chain. `--say "text"` sends a transcript to the word bus (`Shared::words`); the TitoBot module plays the words that are in `crates/shodan-core/src/lexicon.rs` and stays silent for the rest, e.g. `--rack titobot --say "yes no good bad"`. `--hear` (needs the `speech` feature and the model) instead runs the live listener (`speech::Hearing`) over the input WAV, prints each word with the time it reaches the robot, and delivers it a fixed 50 ms after the audio that settled it, so the render stays reproducible. This is how to compare recognition delay without a mic. `--preset` matches built-in names loosely (case/space/dash-insensitive prefix: `ss1`, `ss2`, `subtle`, `glitchstorm`). `--set` uses parameter `key` strings (an unknown key prints the full list). `samples/out_*.wav` is gitignored; `samples/input_tts.wav` is the committed test input. The default rack is sample-identical to the pre-rack engine, so hashing renders before and after a refactor is a cheap regression check.
 
 Set `SHODAN_CONFIG_DIR` to a scratch folder to run the GUI without reading or overwriting the real `settings.json`.
 
@@ -39,7 +53,7 @@ Set `SHODAN_CONFIG_DIR` to a scratch folder to run the GUI without reading or ov
 - **GUI thread** (`src/gui`): owns `App`, settings, device selection, the `Rack` model, and the main-thread half of every CLAP plugin.
 - **Audio threads** (cpal callbacks in `src/audio/io.rs`): the mic capture callback runs the `Engine`; each output device has its own callback.
 
-Everything reachable from `Engine::process` must not allocate, lock, or free. Cross-thread state is only atomics: `Arc<Shared>` (`src/shared.rs`: I/O params and meters) and one `Arc<ModuleShared>` per module instance (its params, enabled, mix). Anything that isn't a plain value crosses via `rtrb` SPSC rings.
+Everything reachable from `Engine::process` must not allocate, lock, or free. Cross-thread state is only atomics: `Arc<Shared>` (`crates/shodan-core/src/shared.rs`: I/O params and meters) and one `Arc<ModuleShared>` per module instance (its params, enabled, mix). Anything that isn't a plain value crosses via `rtrb` SPSC rings.
 
 ### Audio I/O (`src/audio/io.rs`)
 
@@ -47,7 +61,7 @@ The engine runs *inside the input callback* at the microphone's sample rate, so 
 
 Changing devices tears everything down and rebuilds it (`App::restart_audio`): `io::start` calls back into `Rack::build` with the new sample rate, so the fresh `Engine` starts with every module already in place.
 
-### The rack (`src/audio/engine.rs`, `src/audio/module.rs`)
+### The rack (`crates/shodan-core/src/audio/engine.rs`, `crates/shodan-core/src/audio/module.rs`)
 
 `Engine` is only a host: mic → input gain → modules in order → output gain → bypass crossfade → limiter + soft clip. Input gain, output gain and bypass are the `io` parameter table on `Shared`, not a module.
 
@@ -55,14 +69,14 @@ A module implements `Module`: `process(&ModuleCtx, left, right)` works in place 
 
 The rack is edited live through `Command::{Add, Remove, Order}` on a ring; storage is preallocated to `MAX_MODULES`. Added modules fade in. Removed ones are `stop()`ped and sent back on the garbage ring so they (and their `Arc<ModuleShared>`) are dropped on the GUI thread. `Order` carries the full id list rather than index moves, because the GUI list can contain items the engine doesn't have (a plugin that failed to activate).
 
-### Native modules (`src/modules`)
+### Native modules (`crates/shodan-core/src/modules`)
 
 Each module kind is one file exporting a `KIND: ModuleKind` (stable `id`, display name, parameter table, `make` fn) and is listed in `modules::NATIVE`. **Adding a native module = one file + one entry in `NATIVE`**; the add-module menu, the inspector's knobs, persistence and `--set` all come from the table. Kinds today:
 
 - `shodan.rs` — SHODAN Core: DC block / high-pass → noise gate → **LPC analyzer** (whitens to the vocal-fold residual, tracks f0) → **tape** (stutter / reverse / warp glitches fired at syllable onsets, then skip or speed back to live) → **voices** (granular pitch shifter with random jumps, up to 4 detuned copies, robot pitch flattening) → **LPC synthesizer** (puts the formants back, optionally shifted). Mono in (sums L+R), stereo out.
-- `metal.rs` (flanger) and `lofi.rs`: thin stereo wrappers over `src/dsp`.
+- `metal.rs` (flanger) and `lofi.rs`: thin stereo wrappers over `crates/shodan-core/src/dsp`.
 
-The DSP itself lives in `src/dsp` and knows nothing about modules. The key idea in the core is the source/filter split (`src/dsp/lpc.rs`): glitches and pitch moves happen on the residual, so formants stay put and are controlled independently. The synthesizer reads the analyzer's frame for the tape position the shifter is *currently playing* (`tape.position() - grain_delay`), not the live one — keep that alignment when touching tape, pitch or LPC timing.
+The DSP itself lives in `crates/shodan-core/src/dsp` and knows nothing about modules. The key idea in the core is the source/filter split (`crates/shodan-core/src/dsp/lpc.rs`): glitches and pitch moves happen on the residual, so formants stay put and are controlled independently. The synthesizer reads the analyzer's frame for the tape position the shifter is *currently playing* (`tape.position() - grain_delay`), not the live one — keep that alignment when touching tape, pitch or LPC timing.
 
 Native modules smooth their continuous parameters with `Smoothed`, stepped once per `SUB_BLOCK` (32) samples.
 
@@ -70,11 +84,11 @@ Invariant enforced by `every_preset_stays_finite_and_below_full_scale`: output i
 
 ### Parameters, presets, settings
 
-`define_params!` (`src/params.rs`) generates a `P` enum and `DEFS` table (key, label, group, range, default, unit, kind, help) in the module that invokes it; a `Params` is one instance's atomic values over such a table. Adding a knob means adding one line to a kind's table and reading it with `self.s.get(P::X)`.
+`define_params!` (`crates/shodan-core/src/params.rs`) generates a `P` enum and `DEFS` table (key, label, group, range, default, unit, kind, help) in the module that invokes it; a `Params` is one instance's atomic values over such a table. Adding a knob means adding one line to a kind's table and reading it with `self.s.get(P::X)`.
 
 `key` is the persistence identity. It must be unique across *all* tables (tested) and stay stable; reordering or adding params is safe.
 
-Built-in presets (`src/presets.rs`) are flat key → value maps. They act on the I/O table plus the **first module of each kind** in the rack (`presets::targets`) and never change which modules are in the rack. They list only values that differ from defaults; `bypass` is deliberately never touched. A user preset (`UserPreset`) holds the I/O knobs plus the whole rack, and loading it replaces the rack (`Rack::load`): modules the saved rack also has keep running and only take its values, the rest are removed or added. User presets saved before that have no `rack` and behave like built-in ones. `Values::apply` contains a migration shim for presets saved before `formant` existed — follow that pattern when a new parameter changes the meaning of old presets.
+Built-in presets (`crates/shodan-core/src/presets.rs`) are flat key → value maps. They act on the I/O table plus the **first module of each kind** in the rack (`presets::targets`) and never change which modules are in the rack. They list only values that differ from defaults; `bypass` is deliberately never touched. A user preset (`UserPreset`) holds the I/O knobs plus the whole rack, and loading it replaces the rack (`Rack::load`): modules the saved rack also has keep running and only take its values, the rest are removed or added. User presets saved before that have no `rack` and behave like built-in ones. `Values::apply` contains a migration shim for presets saved before `formant` existed — follow that pattern when a new parameter changes the meaning of old presets.
 
 `settings.json` (in the `directories` config dir for `shodan-voice`) stores the rack as an ordered list of `RackItemSettings`, each native item with its own values. Files from before the rack have no `rack`; `Settings::rack_items` then builds the default chain from the old flat `knobs` and appends the old two plugin `slots`.
 
@@ -98,7 +112,7 @@ Lifecycle is split across threads: `LoadedPlugin` (instance, params, editor wind
 
 Plugin editors are hosted in a plain Win32 top-level window (`src/plugins/window.rs`) created on the GUI thread so eframe's message loop pumps it. Plugin discovery (`scan.rs`) covers the standard Windows CLAP directories plus `CLAP_PATH`.
 
-### TitoBot and speech (`src/lexicon.rs`, `src/speech`, `src/modules/titobot.rs`, features `speech` / `speech-cuda`, the latter on by default)
+### TitoBot and speech (`crates/shodan-core/src/lexicon.rs`, `crates/shodan-core/src/speech`, `crates/shodan-core/src/modules/titobot.rs`, features `speech` / `speech-cuda`, the latter on by default in the desktop app and off in `shodan-core`)
 
 The default build compiles whisper.cpp with CUDA, so it needs cmake, clang and the NVIDIA CUDA toolkit (13.4 here; `CUDA_PATH` and `CUDA_PATH_V13_4` must be set, which a shell opened before the install lacks), and the exe needs the toolkit's DLLs on `PATH`. The first build takes about five minutes.
 
@@ -116,4 +130,4 @@ The model is `models/ggml-base.en.bin` in the config folder, or `SHODAN_WHISPER_
 
 ### Platform
 
-Windows-only in practice: Win32 editor windows and `AttachConsole` so `--render` can print from a release build. On first run the output defaults to a virtual cable device if one is installed.
+The desktop app is Windows-only in practice: Win32 editor windows and `AttachConsole` so `--render` can print from a release build. `shodan-core` and `shodan-render` build and test on Linux. On first run the output defaults to a virtual cable device if one is installed.

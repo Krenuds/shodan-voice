@@ -5,7 +5,7 @@ it says so.
 
 ## Where things stand
 
-- `src/lexicon.rs` has 32 words in ten classes, with synonyms (`also`) and two-word phrases.
+- `crates/shodan-core/src/lexicon.rs` has 32 words in ten classes, with synonyms (`also`) and two-word phrases.
   Motifs are hand-designed from per-class building blocks; rests inside a motif are new.
 - Checked offline only: every word through `--say`, and a synthesised sentence through `--hear`
   (phrases arrive as one word, 80–240 ms after the voice). **Not yet tried live with a mic.**
@@ -32,7 +32,7 @@ it says so.
    a rule system (tone colour or octave per class would add room). Word forms are listed by
    hand in `also`; there is no stemming, and Whisper writes numbers as digits.
 6. Not measured: recogniser pass time with the game on the GPU. The strip shows it; if it goes
-   well past 120 ms, raise `PASS_INTERVAL` in `src/speech/mod.rs`.
+   well past 120 ms, raise `PASS_INTERVAL` in `crates/shodan-core/src/speech/mod.rs`.
 
 ## Working without a mic
 

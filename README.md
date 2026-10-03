@@ -27,7 +27,15 @@ To use it as a microphone in other apps, install [VB-Audio Virtual Cable](https:
 
 ## Building
 
-Windows only, Rust stable (MSVC).
+A Cargo workspace of three crates:
+
+| Crate | What it is |
+|---|---|
+| `shodan-voice` (repo root) | The Windows desktop app: GUI, live audio devices, CLAP host. |
+| `crates/shodan-core` | The engine, modules, presets and offline render. No GUI, no devices; builds on Linux. Speech is off unless a feature turns it on. |
+| `crates/shodan-render` | A headless offline renderer on top of `shodan-core`. |
+
+The desktop app is Windows only, Rust stable (MSVC).
 
 ```powershell
 cargo build --release                                  # everything: CLAP host + Whisper on CUDA
@@ -48,7 +56,16 @@ cargo run --release -- --render samples\input_tts.wav out.wav --preset ss1 --see
 cargo run --release -- --render samples\input_tts.wav out.wav --rack titobot --say "hello yes danger"
 ```
 
-`--rack id,id,...` picks a chain, `--set key=value` sets any knob (an unknown key lists them all), and `--hear` runs the live Whisper listener over the file.
+`--rack id,id,...` picks a chain, `--set key=value` sets any knob (an unknown key lists them all), and `--hear` runs the live Whisper listener over the file. Either path may be `-` for stdin or stdout.
+
+`shodan-render` is the same render without the desktop app, for headless use on Linux or Windows. It takes the same arguments and pipes audio through:
+
+```sh
+cargo build --release -p shodan-render
+target/release/shodan-render - - --preset ss1 --seed 1 < samples/input_tts.wav > out.wav
+```
+
+`--say` works in every build; `--hear` needs `--features speech`.
 
 ## License
 
