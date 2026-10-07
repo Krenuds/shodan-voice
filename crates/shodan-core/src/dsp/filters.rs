@@ -39,6 +39,17 @@ impl Biquad {
         self.a2 = (1.0 - alpha) / a0;
     }
 
+    /// Constant 0 dB peak gain band-pass around `freq`.
+    pub fn set_bandpass(&mut self, sr: f32, freq: f32, q: f32) {
+        let (cos, alpha) = Self::prewarp(sr, freq, q);
+        let a0 = 1.0 + alpha;
+        self.b0 = alpha / a0;
+        self.b1 = 0.0;
+        self.b2 = -alpha / a0;
+        self.a1 = -2.0 * cos / a0;
+        self.a2 = (1.0 - alpha) / a0;
+    }
+
     /// Peaking EQ: `gain_db` boost or cut around `freq`.
     pub fn set_peak(&mut self, sr: f32, freq: f32, q: f32, gain_db: f32) {
         let (cos, alpha) = Self::prewarp(sr, freq, q);

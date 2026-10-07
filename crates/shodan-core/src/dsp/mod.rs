@@ -7,6 +7,7 @@ pub mod onset;
 pub mod pitch;
 pub mod psola;
 pub mod rng;
+pub mod saturate;
 pub mod tape;
 pub mod voices;
 pub mod world;
