@@ -16,15 +16,27 @@ pub struct Reshape {
     pub formant: f32,
     /// Extra aperiodicity above 1 kHz (WORLD only): breath and grit in the excitation.
     pub grit: f32,
+    /// Track pitch with Harvest (slow, robust) instead of DIO + StoneMask (about 25x faster).
+    pub harvest: bool,
 }
 
-/// Harvest F0 track, one value per `FRAME_MS`, 0 where unvoiced. Returns (frame times, f0).
-pub fn f0_track(x: &[f64], fs: i32) -> (Vec<f64>, Vec<f64>) {
-    let mut opt = rsworld_sys::HarvestOption::new();
+/// F0 track, one value per `FRAME_MS`, 0 where unvoiced. Returns (frame times, f0).
+pub fn f0_track(x: &[f64], fs: i32, harvest: bool) -> (Vec<f64>, Vec<f64>) {
+    let x = x.to_vec();
+    if harvest {
+        let mut opt = rsworld_sys::HarvestOption::new();
+        opt.f0_floor = 60.0;
+        opt.f0_ceil = 500.0;
+        opt.frame_period = FRAME_MS;
+        return rsworld::harvest(&x, fs, &opt);
+    }
+    let mut opt = rsworld_sys::DioOption::new();
     opt.f0_floor = 60.0;
     opt.f0_ceil = 500.0;
     opt.frame_period = FRAME_MS;
-    rsworld::harvest(&x.to_vec(), fs, &opt)
+    let (times, f0) = rsworld::dio(&x, fs, &opt);
+    let f0 = rsworld::stonemask(&x, fs, &times, &f0);
+    (times, f0)
 }
 
 /// The new pitch of each frame: the median maps to `r.f0`, the contour around it shrinks by `flatten`.
@@ -53,7 +65,7 @@ fn log_interp(env: &[f64], pos: f64) -> f64 {
 pub fn reshape(x: &[f32], sr: f32, r: &Reshape) -> Vec<f32> {
     let fs = sr as i32;
     let x: Vec<f64> = x.iter().map(|&v| v as f64).collect();
-    let (times, f0) = f0_track(&x, fs);
+    let (times, f0) = f0_track(&x, fs, r.harvest);
     let mut ct = rsworld_sys::CheapTrickOption::new(fs);
     let sp = rsworld::cheaptrick(&x, fs, &times, &f0, &mut ct);
     let ap = rsworld::d4c(&x, fs, &times, &f0, &rsworld_sys::D4COption::new());

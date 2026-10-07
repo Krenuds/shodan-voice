@@ -46,7 +46,7 @@ fn marks(x: &[f32], f0: &[f64], hop: f64, sr: f32) -> Vec<Mark> {
 
 pub fn psola(x: &[f32], sr: f32, r: &Reshape) -> Vec<f32> {
     let xd: Vec<f64> = x.iter().map(|&v| v as f64).collect();
-    let (_, f0) = world::f0_track(&xd, sr as i32);
+    let (_, f0) = world::f0_track(&xd, sr as i32, r.harvest);
     let new_f0 = world::target_f0(&f0, r);
     let hop = FRAME_MS * 0.001 * sr as f64;
     let marks = marks(x, &f0, hop, sr);
