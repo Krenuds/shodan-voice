@@ -2954,6 +2954,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "rsworld"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f9a17d9968e83337c1528b1589e1ee9f4373729cbd4aa6e464649bc55a1a0ec"
+dependencies = [
+ "rsworld-sys",
+]
+
+[[package]]
+name = "rsworld-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6f3d097f63fd46fbf37066a56d14ff44d6bafe8a9decd6f6cab2d7e4409ada0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "rtrb"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3144,6 +3162,8 @@ version = "0.1.0"
 dependencies = [
  "directories",
  "hound",
+ "rsworld",
+ "rsworld-sys",
  "rtrb",
  "rustfft",
  "serde",

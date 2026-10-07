@@ -5,6 +5,8 @@ pub mod lofi;
 pub mod lpc;
 pub mod onset;
 pub mod pitch;
+pub mod psola;
 pub mod rng;
 pub mod tape;
 pub mod voices;
+pub mod world;

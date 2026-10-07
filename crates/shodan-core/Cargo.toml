@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 directories = "6.0.0"
 hound = "3.5.1"
+rsworld = "0.1.0"
+rsworld-sys = "0.1.0"
 rtrb = "0.4.0"
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }

@@ -5,6 +5,7 @@ pub mod lofi;
 pub mod metal;
 pub mod titobot;
 pub mod hull;
+pub mod reshape;
 
 use crate::audio::module::{Module, ModuleShared, RackModule};
 use crate::params::ParamDef;
@@ -20,7 +21,7 @@ pub struct ModuleKind {
     pub make: fn(sr: f32, seed: u64, shared: &Arc<ModuleShared>, app: &Arc<Shared>) -> Box<dyn Module>,
 }
 
-pub static NATIVE: [ModuleKind; 5] = [shodan::KIND, metal::KIND, lofi::KIND, titobot::KIND, hull::KIND];
+pub static NATIVE: [ModuleKind; 6] = [shodan::KIND, metal::KIND, lofi::KIND, titobot::KIND, hull::KIND, reshape::KIND];
 
 pub fn kind(id: &str) -> Option<&'static ModuleKind> {
     NATIVE.iter().find(|k| k.id == id)

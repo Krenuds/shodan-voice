@@ -3,7 +3,7 @@
 
 use crate::audio::engine::Engine;
 use crate::lexicon;
-use crate::modules::{self, titobot};
+use crate::modules::{self, reshape, titobot};
 use crate::presets;
 use crate::shared::Shared;
 use crate::speech::{Heard, Hearing};
@@ -87,9 +87,12 @@ pub fn run(prog: &str, args: &[String]) -> Result<(), String> {
         }
     }
     .map_err(|e| format!("{input}: {e}"))?;
-    let mono: Vec<f32> = samples.chunks(channels).map(|f| f.iter().sum::<f32>() / channels as f32).collect();
+    let mut mono: Vec<f32> = samples.chunks(channels).map(|f| f.iter().sum::<f32>() / channels as f32).collect();
 
     let sr = spec.sample_rate as f32;
+    for inst in rack.iter().filter(|i| i.kind.id == reshape::KIND.id) {
+        mono = reshape::offline(&inst.shared.params, sr, &mono);
+    }
     let mut engine = Engine::new(sr, shared.clone(), modules::build(&rack, sr, seed, &shared), None);
     // After the modules exist: they only hear words said from then on.
     if let Some(text) = &say {
