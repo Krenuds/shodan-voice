@@ -39,6 +39,18 @@ impl Biquad {
         self.a2 = (1.0 - alpha) / a0;
     }
 
+    /// Peaking EQ: `gain_db` boost or cut around `freq`.
+    pub fn set_peak(&mut self, sr: f32, freq: f32, q: f32, gain_db: f32) {
+        let (cos, alpha) = Self::prewarp(sr, freq, q);
+        let a = 10f32.powf(gain_db / 40.0);
+        let a0 = 1.0 + alpha / a;
+        self.b0 = (1.0 + alpha * a) / a0;
+        self.b1 = -2.0 * cos / a0;
+        self.b2 = (1.0 - alpha * a) / a0;
+        self.a1 = self.b1;
+        self.a2 = (1.0 - alpha / a) / a0;
+    }
+
     fn prewarp(sr: f32, freq: f32, q: f32) -> (f32, f32) {
         let w = 2.0 * PI * freq.clamp(10.0, sr * 0.49) / sr;
         (w.cos(), w.sin() / (2.0 * q))
